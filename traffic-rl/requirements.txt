@@ -1,0 +1,6 @@
+sumolib
+traci
+gymnasium
+torch
+numpy
+matplotlib
