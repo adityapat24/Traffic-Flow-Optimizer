@@ -43,6 +43,44 @@ pip install -r requirements.txt
 
 Depending on your platform, you may also need to install SUMO separately. Refer to the official SUMO installation guide.
 
+### 1. Install SUMO
+
+Download and install the official macOS installer:
+
+https://sumo.dlr.de/docs/Installing/index.html
+
+Verify installation:
+
+```bash
+sumo --version
+```
+
+### 2. Set Sumo Environment Variables
+
+Add the following to your shell configuration (~/.zshrc):
+
+```bash
+export SUMO_HOME="/Library/Frameworks/EclipseSUMO.framework/Versions/1.26.0/EclipseSUMO/share/sumo"
+export PATH="/Library/Frameworks/EclipseSUMO.framework/Versions/1.26.0/EclipseSUMO/bin:$PATH"
+```
+
+Reload your shell and verify
+
+```bash
+source ~/.zshrc
+echo $SUMO_HOME
+```
+
+### 3. Verify SUMO + TraCI Integration
+
+python scripts/test_traci.py
+
+Expected:
+
+```bash
+Step 10 complete.
+SUMO connection closed.
+```
 
 ## Next Steps
 
