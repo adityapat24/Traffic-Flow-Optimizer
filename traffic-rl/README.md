@@ -82,6 +82,20 @@ Step 10 complete.
 SUMO connection closed.
 ```
 
+## Running the single intersection simulation
+
+From the `traffic-rl` directory, run:
+
+```bash
+sumo-gui -c sumo/sim.sumocfg
+```
+
+If you want, a gui-less verion
+
+```bash
+sumo -c sumo/sim.sumocfg
+```
+
 ## Next Steps
 
 - Implement the SUMO network and routes in `sumo/`.
