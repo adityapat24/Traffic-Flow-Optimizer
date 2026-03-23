@@ -15,6 +15,8 @@ def main() -> None:
     try:
         obs, info = env.reset()
         print("reset() -> obs shape:", obs.shape, "info:", info)
+        print("action meanings:", env.action_meanings())
+        print("first 5 observation features:", env.observation_feature_names()[:5])
 
         for i in range(5):
             a = env.action_space.sample()
