@@ -1,6 +1,6 @@
+from __future__ import annotations
 """Gymnasium wrapper around a SUMO simulation controlled via TraCI."""
 "Test comment"
-from __future__ import annotations
 
 import os
 import sys
@@ -11,6 +11,7 @@ from typing import Any, SupportsFloat
 import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
+import traci
 
 
 def setup_sumo_tools() -> None:
@@ -94,6 +95,26 @@ class TrafficEnv(gym.Env):
         self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
         self.action_space = spaces.Discrete(2)
 
+        #### Traffic Signal Safety Constraints ##### 
+        self.min_green_duration = 10.0  # seconds min before allowing switch 
+        self.yellow_duration = 3.0  # seconds for yellow phase 
+        self.all_red_duration = 0.0 # no all red in this network 
+
+        # phase config from `intersection.net.xml`:
+        self.green_phases = [0, 2]  # indices of green phases in the program
+        self.yellow_phases = [1, 3]  # indices of yellow phases in the program
+        self.num_phases = 4 # total number of phases in the program 
+
+        # track phases 
+        self.current_phase = 0
+        self.phase_start = None 
+        self.in_yellow = False
+        self.yellow_start_time = None 
+
+        # reward penalties for constraint violations 
+        self.invalid_switch_penalty = -10.0
+        self.valid_switch_reward = 1.0
+
     def _num_phases(self) -> int:
         import traci
 
@@ -144,6 +165,34 @@ class TrafficEnv(gym.Env):
             obs[base + 1] = obs[base + 1] / max(self.waiting_time_norm_seconds, 1.0)
             obs[base + 2] = np.clip(obs[base + 2], 0.0, 1.0)
         return obs
+    
+    def get_yellow_phase_for_green(self, green_phase: int) -> int:
+        """ Map green phase idx to its corresponding yellow phase"""
+        # phase 0 (green) -> phase 1 (yellow)
+        # phase 2 (green) -> phase 3 (yellow)
+        if green_phase == 0:
+            return 1
+        elif green_phase == 2:
+            return 3
+        else:
+            raise ValueError(f"Invalid green phase index: {green_phase}, must be 0 or 2 for this network.")
+
+    def _handle_transitions(self, current_time: float) -> None:
+        """internal: auto advance phase transitions 
+        Yellow -> next green when yellow elapsed """
+        if self.in_yellow and current_time - self.yellow_start_time >= self.yellow_duration:
+            self._advance_to_next_green(current_time)
+
+    def _advance_to_next_green(self, current_time: float) -> None:
+        """internal: advance from yellow to next green phase"""
+
+        assert self._tl_id is not None
+        self.current_phase = (self.current_phase + 2) % self.num_phases
+        assert self.current_phase in self.green_phases, f"Expected to switch to green phase, got {self.current_phase}"
+        traci.trafficlight.setPhase(self._tl_id, self.current_phase)
+        self.phase_start_time = current_time
+        self.in_yellow = False 
+
 
     def _get_obs(self) -> np.ndarray:
         raw = self._get_raw_obs()
@@ -206,32 +255,63 @@ class TrafficEnv(gym.Env):
                 high[density_idx] = 1.0
         self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
 
+        self.current_phase = 0
+        self.phase_start_time = traci.simulation.getTime()
+        self.in_yellow = False
+        traci.trafficlight.setPhase(self._tl_id, self.current_phase)
+        
         traci.simulationStep()
         return self._get_obs(), {}
 
     def step(
         self, action: SupportsFloat | np.ndarray
-    ) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
+        ) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
         import traci
 
         if not traci.isLoaded():
             raise RuntimeError("No active SUMO connection; call reset() first.")
 
+        current_time = traci.simulation.getTime()
+        
+        # ===== Handle ongoing transitions (auto-advance yellow→green) =====
+        self._handle_transitions(current_time)
+        
+        # ===== Process action with safety constraints =====
         a = int(action) if not isinstance(action, np.ndarray) else int(action.item())
-
-        if a == 1:
-            assert self._tl_id is not None
-            n = self._num_phases()
-            cur = traci.trafficlight.getPhase(self._tl_id)
-            traci.trafficlight.setPhase(self._tl_id, (cur + 1) % n)
-
-        traci.simulationStep()
-
-        obs = self._get_obs()
+        
         reward = 0.0
+        
+        if a == 1:  # Switch action
+            assert self._tl_id is not None
+            time_in_green = current_time - self.phase_start_time
+            
+            if self.in_yellow:
+                # Cannot switch during yellow transition
+                reward = self.invalid_switch_penalty
+            elif time_in_green < self.min_green_duration:
+                # Minimum green time not met
+                reward = self.invalid_switch_penalty
+            else:
+                # ===== VALID SWITCH: Initiate yellow transition =====
+                yellow_phase = self.get_yellow_phase_for_green(self.current_phase)
+                traci.trafficlight.setPhase(self._tl_id, yellow_phase)
+                traci.trafficlight.setPhaseDuration(self._tl_id, self.yellow_duration)
+                self.in_yellow = True
+                self.yellow_start_time = current_time
+                reward = self.valid_switch_reward
+        
+        # ===== Run simulation and collect observation =====
+        traci.simulationStep()
+        
+        obs = self._get_obs()
         terminated = bool(traci.simulation.getMinExpectedNumber() <= 0)
         truncated = False
-        info: dict[str, Any] = {}
+        info: dict[str, Any] = {
+            "current_phase": self.current_phase,
+            "in_yellow": self.in_yellow,
+            "time_in_phase": current_time - self.phase_start_time,
+        }
+        
         return obs, reward, terminated, truncated, info
 
     def close(self) -> None:
