@@ -107,7 +107,8 @@ class TrafficEnv(gym.Env):
 
         # track phases 
         self.current_phase = 0
-        self.phase_start = None 
+        # self.phase_start = None
+        self.phase_start_time = None
         self.in_yellow = False
         self.yellow_start_time = None 
 
@@ -298,6 +299,7 @@ class TrafficEnv(gym.Env):
                 traci.trafficlight.setPhaseDuration(self._tl_id, self.yellow_duration)
                 self.in_yellow = True
                 self.yellow_start_time = current_time
+                self.phase_start_time = current_time
                 reward = self.valid_switch_reward
         
         # ===== Run simulation and collect observation =====
