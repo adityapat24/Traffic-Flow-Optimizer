@@ -116,6 +116,13 @@ class TrafficEnv(gym.Env):
         self.invalid_switch_penalty = -10.0
         self.valid_switch_reward = 1.0
 
+        ## reward config
+        self.reward_config = {
+            "w_wait": 0.1, ## will be subtracted from reward, so using positive scalers
+            "w_cars_through": 1.0,
+            }
+        
+
     def _num_phases(self) -> int:
         import traci
 
@@ -280,7 +287,7 @@ class TrafficEnv(gym.Env):
         # ===== Process action with safety constraints =====
         a = int(action) if not isinstance(action, np.ndarray) else int(action.item())
         
-        reward = 0.0
+        constraint_penalty = 0.0
         
         if a == 1:  # Switch action
             assert self._tl_id is not None
@@ -288,10 +295,10 @@ class TrafficEnv(gym.Env):
             
             if self.in_yellow:
                 # Cannot switch during yellow transition
-                reward = self.invalid_switch_penalty
+                constraint_penalty = self.invalid_switch_penalty
             elif time_in_green < self.min_green_duration:
                 # Minimum green time not met
-                reward = self.invalid_switch_penalty
+                constraint_penalty = self.invalid_switch_penalty
             else:
                 # ===== VALID SWITCH: Initiate yellow transition =====
                 yellow_phase = self.get_yellow_phase_for_green(self.current_phase)
@@ -300,18 +307,47 @@ class TrafficEnv(gym.Env):
                 self.in_yellow = True
                 self.yellow_start_time = current_time
                 self.phase_start_time = current_time
-                reward = self.valid_switch_reward
+                constraint_penalty = self.valid_switch_reward
         
         # ===== Run simulation and collect observation =====
         traci.simulationStep()
+
+        # Reward Calculation
+        ## get all vehicles
+        vehicle_ids = traci.vehicle.getIDList()
+
+        ## get total wait time and cars through (success)
+        total_wait = sum(traci.vehicle.getWaitingTime(v) for v in vehicle_ids)
+        cars_through = len(traci.simulation.getArrivedIDList())
+
+        ## gets weights to scale reward
+        w_wait = self.reward_config["w_wait"]
+        w_cars_through = self.reward_config["w_cars_through"]
+
+        ## traffic reward is scaled cards through minus scaled wait time
+        traffic_reward = (w_cars_through * cars_through) - (w_wait * total_wait)
+
+        ## total reward is traffic reward plus constraint penalty (penalty is signed, so add it)
+        reward = traffic_reward + constraint_penalty
         
         obs = self._get_obs()
         terminated = bool(traci.simulation.getMinExpectedNumber() <= 0)
         truncated = False
         info: dict[str, Any] = {
+            ## phase info
             "current_phase": self.current_phase,
             "in_yellow": self.in_yellow,
             "time_in_phase": current_time - self.phase_start_time,
+                
+            ## reward info
+            "total_wait": total_wait,
+            "cars_through": cars_through,
+            "traffic_reward": traffic_reward,
+            "constraint_penalty": constraint_penalty,
+            "final_reward": reward,
+            ## reward weight (scaler coefficients used in reward calculation)
+            "w_wait": w_wait,
+            "w_cars_through": w_cars_through,
         }
         
         return obs, reward, terminated, truncated, info
