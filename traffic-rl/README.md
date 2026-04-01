@@ -102,3 +102,42 @@ sumo -c sumo/sim.sumocfg
 - Build the Gymnasium environment in `env/`.
 - Implement baseline controllers in `baselines/`.
 - Implement and train RL agents in `agents/` and `scripts/`.
+
+## Fixed-time baseline (Ticket 6)
+
+Run a reproducible static-timer benchmark:
+
+```bash
+python scripts/run_fixed_time_baseline.py --episodes 5 --max-steps 1000
+```
+
+Outputs are written to:
+
+- `results/baselines/fixed_time/fixed_time_<timestamp>.json`
+- `results/baselines/fixed_time/fixed_time_<timestamp>.csv`
+
+To match exact route randomness/seeds with RL experiments, pass explicit seeds:
+
+```bash
+python scripts/run_fixed_time_baseline.py --episodes 3 --seeds 4100,4101,4102
+```
+
+## Actuated baseline (Ticket 7)
+
+Run a rule-based sensor-like controller benchmark:
+
+```bash
+python scripts/run_actuated_baseline.py --episodes 5 --max-steps 1000
+```
+
+Outputs are written to:
+
+- `results/baselines/actuated/actuated_<timestamp>.json`
+- `results/baselines/actuated/actuated_<timestamp>.csv`
+
+To run fixed-time and actuated with the same seeds for side-by-side comparison:
+
+```bash
+python scripts/run_fixed_time_baseline.py --episodes 3 --seeds 4100,4101,4102
+python scripts/run_actuated_baseline.py --episodes 3 --seeds 4100,4101,4102
+```

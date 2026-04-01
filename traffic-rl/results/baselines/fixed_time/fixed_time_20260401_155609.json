@@ -1,0 +1,43 @@
+{
+  "baseline": "fixed_time",
+  "generated_at_utc": "2026-04-01T15:56:09Z",
+  "config": {
+    "sumocfg_path": "/Users/adityapathak/CS4100_Final_Project/traffic-rl/sumo/sim.sumocfg",
+    "sumo_binary": "sumo",
+    "episodes": 2,
+    "max_steps": 200,
+    "phase_durations": "42,3,42,3",
+    "seeds": [
+      4100,
+      4101
+    ]
+  },
+  "aggregates": {
+    "episodes": 2,
+    "mean_avg_queue_length": 5.8725,
+    "mean_avg_waiting_time": 76.6375,
+    "mean_total_arrivals": 77,
+    "mean_throughput_per_step": 0.385,
+    "total_arrivals": 154
+  },
+  "episodes_data": [
+    {
+      "episode_idx": 0,
+      "seed": 4100,
+      "steps": 200,
+      "avg_queue_length": 5.81,
+      "avg_waiting_time": 76.03,
+      "total_arrivals": 74,
+      "throughput_per_step": 0.37
+    },
+    {
+      "episode_idx": 1,
+      "seed": 4101,
+      "steps": 200,
+      "avg_queue_length": 5.935,
+      "avg_waiting_time": 77.245,
+      "total_arrivals": 80,
+      "throughput_per_step": 0.4
+    }
+  ]
+}
