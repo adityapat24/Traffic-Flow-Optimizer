@@ -1,0 +1,21 @@
+{
+  "sumocfg_path": "sumo/sim.sumocfg",
+  "sumo_binary": "sumo",
+  "normalize_observations": true,
+
+  "seed": 42,
+  "num_episodes": 60,
+  "max_steps_per_episode": 200,
+
+  "gamma": 0.99,
+  "learning_rate": 0.001,
+  "adv_estimate_lambda": 0.95,
+  "clip_epsilon": 0.2,
+  "update_epochs": 4,
+
+  "hidden_dim": 128,
+
+  "save_every": 10,
+  "eval_episodes": 5,
+  "use_cuda": false
+}
