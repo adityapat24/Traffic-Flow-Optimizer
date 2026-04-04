@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from statistics import mean, stdev
 from typing import Protocol
+import xml.etree.ElementTree as ET
 
 import numpy as np
 import torch
@@ -40,6 +41,7 @@ class EpisodeMetrics:
     mean_queue_length: float
     throughput: float
     mean_travel_time: float
+    travel_time_mse: float
     completed_trips: int
 
 
@@ -51,6 +53,43 @@ class Controller(Protocol):
 
     def act(self, obs: np.ndarray, env: TrafficEnv) -> int:
         ...
+
+
+@dataclass(frozen=True)
+class TravelSegment:
+    length: float
+    speed: float
+
+    def free_flow_seconds(self, vehicle_max_speed: float | None = None) -> float:
+        effective_speed = self.speed
+        if vehicle_max_speed is not None:
+            effective_speed = min(effective_speed, vehicle_max_speed)
+        return self.length / max(effective_speed, 1e-6)
+
+
+@dataclass(frozen=True)
+class TravelTimePredictor:
+    edge_segments: dict[str, TravelSegment]
+    connection_segments: dict[tuple[str, str], TravelSegment]
+
+    def predict_route_time(
+        self,
+        route_edges: list[str],
+        vehicle_max_speed: float | None = None,
+    ) -> float:
+        total_seconds = 0.0
+
+        for edge_id in route_edges:
+            segment = self.edge_segments.get(edge_id)
+            if segment is not None:
+                total_seconds += segment.free_flow_seconds(vehicle_max_speed)
+
+        for from_edge, to_edge in zip(route_edges, route_edges[1:]):
+            segment = self.connection_segments.get((from_edge, to_edge))
+            if segment is not None:
+                total_seconds += segment.free_flow_seconds(vehicle_max_speed)
+
+        return total_seconds
 
 
 def load_json(path: Path) -> dict:
@@ -93,6 +132,74 @@ def parse_scenarios(raw: str) -> list[Path]:
     return scenarios
 
 
+def resolve_sumo_input_path(sumocfg_path: Path, value: str) -> Path:
+    return (sumocfg_path.parent / value).resolve()
+
+
+def load_travel_time_predictor(sumocfg_path: Path) -> TravelTimePredictor:
+    sumocfg_root = ET.parse(sumocfg_path).getroot()
+    input_node = sumocfg_root.find("input")
+    if input_node is None:
+        raise RuntimeError(f"SUMO config '{sumocfg_path}' is missing an <input> section.")
+
+    net_file_node = input_node.find("net-file")
+    if net_file_node is None:
+        raise RuntimeError(f"SUMO config '{sumocfg_path}' is missing a <net-file> entry.")
+
+    net_file_value = net_file_node.attrib.get("value", "").strip()
+    if not net_file_value:
+        raise RuntimeError(f"SUMO config '{sumocfg_path}' has an empty net-file value.")
+
+    net_path = resolve_sumo_input_path(sumocfg_path, net_file_value)
+    if not net_path.exists():
+        raise FileNotFoundError(f"SUMO network file not found: {net_path}")
+
+    net_root = ET.parse(net_path).getroot()
+
+    lane_segments: dict[str, TravelSegment] = {}
+    edge_segments: dict[str, TravelSegment] = {}
+
+    for edge_node in net_root.findall("edge"):
+        edge_id = edge_node.attrib.get("id")
+        if not edge_id:
+            continue
+
+        segments_for_edge: list[TravelSegment] = []
+        for lane_node in edge_node.findall("lane"):
+            length = float(lane_node.attrib["length"])
+            speed = float(lane_node.attrib["speed"])
+            segment = TravelSegment(length=length, speed=speed)
+            lane_id = lane_node.attrib.get("id")
+            if lane_id:
+                lane_segments[lane_id] = segment
+            segments_for_edge.append(segment)
+
+        if edge_node.attrib.get("function") == "internal" or not segments_for_edge:
+            continue
+
+        edge_segments[edge_id] = min(
+            segments_for_edge,
+            key=lambda segment: segment.free_flow_seconds(),
+        )
+
+    connection_segments: dict[tuple[str, str], TravelSegment] = {}
+    for connection_node in net_root.findall("connection"):
+        from_edge = connection_node.attrib.get("from")
+        to_edge = connection_node.attrib.get("to")
+        via_lane_id = connection_node.attrib.get("via")
+        if not from_edge or not to_edge or not via_lane_id:
+            continue
+
+        via_segment = lane_segments.get(via_lane_id)
+        if via_segment is not None:
+            connection_segments[(from_edge, to_edge)] = via_segment
+
+    return TravelTimePredictor(
+        edge_segments=edge_segments,
+        connection_segments=connection_segments,
+    )
+
+
 def set_global_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -113,19 +220,30 @@ def current_total_queue_length(lane_ids: list[str]) -> float:
 
 def register_vehicle_events(
     departure_times: dict[str, float],
+    predicted_travel_times: dict[str, float],
     travel_times: list[float],
+    squared_errors: list[float],
+    predictor: TravelTimePredictor,
 ) -> int:
     sim_time = float(traci.simulation.getTime())
     depart_time = max(sim_time - 1.0, 0.0)
 
     for vehicle_id in traci.simulation.getDepartedIDList():
         departure_times.setdefault(vehicle_id, depart_time)
+        predicted_travel_times[vehicle_id] = predictor.predict_route_time(
+            route_edges=list(traci.vehicle.getRoute(vehicle_id)),
+            vehicle_max_speed=float(traci.vehicle.getMaxSpeed(vehicle_id)),
+        )
 
     arrived_ids = list(traci.simulation.getArrivedIDList())
     for vehicle_id in arrived_ids:
         start_time = departure_times.pop(vehicle_id, None)
         if start_time is not None:
-            travel_times.append(sim_time - start_time)
+            actual_travel_time = sim_time - start_time
+            travel_times.append(actual_travel_time)
+            predicted_travel_time = predicted_travel_times.pop(vehicle_id, None)
+            if predicted_travel_time is not None:
+                squared_errors.append((actual_travel_time - predicted_travel_time) ** 2)
 
     return len(arrived_ids)
 
@@ -410,6 +528,7 @@ def run_episode(
     scenario_path: Path,
     seed: int,
     horizon: int,
+    travel_time_predictor: TravelTimePredictor,
 ) -> EpisodeMetrics:
     set_global_seed(seed)
     obs, _ = env.reset(seed=seed)
@@ -423,7 +542,9 @@ def run_episode(
     waiting_trace: list[float] = []
     queue_trace: list[float] = []
     travel_times: list[float] = []
+    squared_errors: list[float] = []
     departure_times: dict[str, float] = {}
+    predicted_travel_times: dict[str, float] = {}
     completed_trips = 0
     steps = 0
 
@@ -432,7 +553,13 @@ def run_episode(
         obs, _reward, terminated, truncated, _info = env.step(action)
 
         steps += 1
-        completed_trips += register_vehicle_events(departure_times, travel_times)
+        completed_trips += register_vehicle_events(
+            departure_times=departure_times,
+            predicted_travel_times=predicted_travel_times,
+            travel_times=travel_times,
+            squared_errors=squared_errors,
+            predictor=travel_time_predictor,
+        )
         waiting_trace.append(current_mean_waiting_time())
         queue_trace.append(current_total_queue_length(lane_ids))
 
@@ -448,6 +575,7 @@ def run_episode(
         mean_queue_length=float(mean(queue_trace)) if queue_trace else 0.0,
         throughput=float(completed_trips) / max(steps, 1),
         mean_travel_time=float(mean(travel_times)) if travel_times else 0.0,
+        travel_time_mse=float(mean(squared_errors)) if squared_errors else 0.0,
         completed_trips=completed_trips,
     )
 
@@ -488,6 +616,7 @@ def summarize_controller(episodes: list[EpisodeMetrics]) -> dict:
         "mean_queue_length": summarize_metric(seed_means("mean_queue_length")),
         "throughput": summarize_metric(seed_means("throughput")),
         "mean_travel_time": summarize_metric(seed_means("mean_travel_time")),
+        "travel_time_mse": summarize_metric(seed_means("travel_time_mse")),
     }
 
     return {
@@ -512,6 +641,7 @@ def print_comparison_table(summaries: list[dict]) -> None:
         "queue (mean+/-ci95)",
         "throughput (mean+/-ci95)",
         "travel (mean+/-ci95)",
+        "travel_mse (mean+/-ci95)",
     ]
 
     rows = []
@@ -524,6 +654,7 @@ def print_comparison_table(summaries: list[dict]) -> None:
                 format_mean_ci(summary["metrics"]["mean_queue_length"]),
                 format_mean_ci(summary["metrics"]["throughput"]),
                 format_mean_ci(summary["metrics"]["mean_travel_time"]),
+                format_mean_ci(summary["metrics"]["travel_time_mse"]),
             ]
         )
 
@@ -590,7 +721,23 @@ def save_outputs(
             "mean_queue_length": "Per-step total halting vehicles across the controlled intersection, averaged over the episode.",
             "throughput": "Completed trips per simulation step.",
             "mean_travel_time": "Average trip duration for vehicles that completed within the episode horizon.",
+            "travel_time_mse": "Per-episode mean squared error between each completed vehicle's predicted free-flow travel time and its actual travel time.",
             "uncertainty": "95% confidence intervals computed across seed-level aggregates.",
+        },
+        "travel_time_prediction_methodology": {
+            "predicted_travel_time": (
+                "For each departed vehicle, predicted travel time is computed as the "
+                "sum of free-flow times across every route edge plus the internal "
+                "junction connector between each consecutive edge pair. Each segment "
+                "free-flow time is segment_length / min(segment_speed_limit, vehicle_max_speed_at_departure)."
+            ),
+            "actual_travel_time": (
+                "For each completed vehicle, actual travel time is arrival_sim_time - departure_sim_time."
+            ),
+            "travel_time_mse": (
+                "Per-episode travel_time_mse = mean((actual_travel_time - predicted_travel_time)^2) "
+                "over vehicles that both departed and arrived within the episode horizon."
+            ),
         },
         "summary": summaries,
         "episodes": [asdict(episode) for episode in episodes],
@@ -671,6 +818,7 @@ def main() -> None:
         controller_episodes: list[EpisodeMetrics] = []
 
         for scenario_path in scenarios:
+            travel_time_predictor = load_travel_time_predictor(scenario_path)
             env = TrafficEnv(
                 sumocfg_path=scenario_path,
                 sumo_binary=args.sumo_binary,
@@ -684,13 +832,14 @@ def main() -> None:
                         scenario_path=scenario_path,
                         seed=seed,
                         horizon=args.horizon,
+                        travel_time_predictor=travel_time_predictor,
                     )
                     controller_episodes.append(episode)
                     print(
                         f"[{episode.controller}] scenario={episode.scenario} seed={episode.seed} "
                         f"steps={episode.steps} wait={episode.mean_waiting_time:.3f} "
                         f"queue={episode.mean_queue_length:.3f} throughput={episode.throughput:.3f} "
-                        f"travel={episode.mean_travel_time:.3f}"
+                        f"travel={episode.mean_travel_time:.3f} travel_mse={episode.travel_time_mse:.3f}"
                     )
             finally:
                 env.close()
