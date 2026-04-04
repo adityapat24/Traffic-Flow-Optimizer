@@ -223,8 +223,14 @@ class TrafficEnv(gym.Env):
         # Always close prior session before new episode to avoid stale sessions.
         self.close()
         cfg = str(self.sumocfg_path.resolve())
+
+        # changed this to forward the gym seed into sumo so RL and baselines can 
+        # share the same route-generation randomness during eval 
+        sumo_cmd =[self.sumo_binary, "-c", cfg]
+        if seed is not None: 
+            sumo_cmd.extend(["--seed", str(int(seed))])
         try:
-            traci.start([self.sumo_binary, "-c", cfg])
+            traci.start(sumo_cmd)
         except FileNotFoundError as exc:
             raise RuntimeError(
                 f"Could not start SUMO binary '{self.sumo_binary}'. Ensure SUMO is "

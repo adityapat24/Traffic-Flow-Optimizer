@@ -1,0 +1,723 @@
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import math
+import random
+import sys
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from statistics import mean, stdev
+from typing import Protocol
+
+import numpy as np
+import torch
+import traci
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
+
+from agents.dqn_agent import DQNAgent, DQNConfig
+from agents.ppo_agent import PPOAgent, PPOConfig
+from env.traffic_env import TrafficEnv
+
+DEFAULT_SCENARIOS = [PROJECT_ROOT / "sumo" / "sim.sumocfg"]
+DEFAULT_SEEDS = [4100, 4101, 4102, 4103, 4104]
+DEFAULT_HORIZON = 1000
+DEFAULT_CONTROLLERS = ("fixed_time", "actuated", "dqn", "ppo")
+RESULTS_DIR = PROJECT_ROOT / "results" / "evaluation"
+
+@dataclass
+class EpisodeMetrics:
+    controller: str
+    scenario: str
+    seed: int
+    steps: int
+    mean_waiting_time: float
+    mean_queue_length: float
+    throughput: float
+    mean_travel_time: float
+    completed_trips: int
+
+
+class Controller(Protocol):
+    name: str
+
+    def reset(self, env: TrafficEnv) -> None:
+        ...
+
+    def act(self, obs: np.ndarray, env: TrafficEnv) -> int:
+        ...
+
+
+def load_json(path: Path) -> dict:
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def resolve_path(raw: str | Path) -> Path:
+    path = Path(raw)
+    if path.is_absolute():
+        return path
+    return (PROJECT_ROOT / path).resolve()
+
+
+def display_path(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(PROJECT_ROOT.resolve()))
+    except ValueError:
+        return str(path.resolve())
+
+
+def parse_csv_list(raw: str) -> list[str]:
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def parse_int_csv(raw: str) -> list[int]:
+    values = [int(item.strip()) for item in raw.split(",") if item.strip()]
+    if not values:
+        raise ValueError("Expected at least one integer value.")
+    return values
+
+
+def parse_scenarios(raw: str) -> list[Path]:
+    scenarios = [resolve_path(item) for item in parse_csv_list(raw)]
+    if not scenarios:
+        raise ValueError("Expected at least one scenario path.")
+    for scenario in scenarios:
+        if not scenario.exists():
+            raise FileNotFoundError(f"Scenario not found: {scenario}")
+    return scenarios
+
+
+def set_global_seed(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+
+def current_mean_waiting_time() -> float:
+    vehicle_ids = traci.vehicle.getIDList()
+    if not vehicle_ids:
+        return 0.0
+    waits = [float(traci.vehicle.getWaitingTime(vehicle_id)) for vehicle_id in vehicle_ids]
+    return float(mean(waits))
+
+
+def current_total_queue_length(lane_ids: list[str]) -> float:
+    return float(sum(traci.lane.getLastStepHaltingNumber(lane_id) for lane_id in lane_ids))
+
+
+def register_vehicle_events(
+    departure_times: dict[str, float],
+    travel_times: list[float],
+) -> int:
+    sim_time = float(traci.simulation.getTime())
+    depart_time = max(sim_time - 1.0, 0.0)
+
+    for vehicle_id in traci.simulation.getDepartedIDList():
+        departure_times.setdefault(vehicle_id, depart_time)
+
+    arrived_ids = list(traci.simulation.getArrivedIDList())
+    for vehicle_id in arrived_ids:
+        start_time = departure_times.pop(vehicle_id, None)
+        if start_time is not None:
+            travel_times.append(sim_time - start_time)
+
+    return len(arrived_ids)
+
+
+def build_green_phase_lane_map(tl_id: str, green_phase_ids: list[int]) -> dict[int, set[str]]:
+    logics = traci.trafficlight.getAllProgramLogics(tl_id)
+    if not logics:
+        raise RuntimeError(f"No program logic found for traffic light '{tl_id}'.")
+
+    phases = logics[0].phases
+    links_by_index = traci.trafficlight.getControlledLinks(tl_id)
+    phase_lanes: dict[int, set[str]] = {}
+
+    for phase_idx in green_phase_ids:
+        if phase_idx >= len(phases):
+            raise RuntimeError(f"Phase index {phase_idx} is out of range for '{tl_id}'.")
+
+        lanes: set[str] = set()
+        for signal_idx, signal_state in enumerate(phases[phase_idx].state):
+            if signal_idx >= len(links_by_index):
+                continue
+            if signal_state not in ("G", "g"):
+                continue
+
+            for link in links_by_index[signal_idx]:
+                if link and link[0]:
+                    lanes.add(link[0])
+
+        phase_lanes[phase_idx] = lanes
+
+    return phase_lanes
+
+
+def phase_demand(phase_idx: int, phase_lanes: dict[int, set[str]]) -> float:
+    lanes = phase_lanes.get(phase_idx, set())
+    if not lanes:
+        return 0.0
+
+    halted = sum(float(traci.lane.getLastStepHaltingNumber(lane_id)) for lane_id in lanes)
+    approaching = sum(float(traci.lane.getLastStepVehicleNumber(lane_id)) for lane_id in lanes)
+    return halted + 0.5 * approaching
+
+
+class FixedTimeController:
+    name = "fixed_time"
+
+    def __init__(self, green_durations: list[int]) -> None:
+        if not green_durations:
+            raise ValueError("Fixed-time controller requires at least one green duration.")
+        if any(duration <= 0 for duration in green_durations):
+            raise ValueError("Fixed-time green durations must be positive.")
+        self.green_durations = green_durations
+
+    def reset(self, env: TrafficEnv) -> None:
+        if len(self.green_durations) != len(env.green_phases):
+            raise ValueError(
+                "Number of fixed-time green durations must match env.green_phases. "
+                f"Got {len(self.green_durations)} durations for {len(env.green_phases)} green phases."
+            )
+
+    def act(self, obs: np.ndarray, env: TrafficEnv) -> int:
+        if env.in_yellow:
+            return 0
+
+        current_time = float(traci.simulation.getTime())
+        time_in_phase = current_time - float(env.phase_start_time)
+        green_idx = env.green_phases.index(env.current_phase)
+        return int(time_in_phase >= float(self.green_durations[green_idx]))
+
+
+class ActuatedController:
+    name = "actuated"
+
+    def __init__(
+        self,
+        *,
+        min_green: int,
+        max_green: int,
+        demand_gap: float,
+        low_demand_threshold: float,
+    ) -> None:
+        if min_green <= 0 or max_green <= 0:
+            raise ValueError("Actuated min/max green must be > 0.")
+        if min_green > max_green:
+            raise ValueError("Actuated min_green must be <= max_green.")
+
+        self.min_green = min_green
+        self.max_green = max_green
+        self.demand_gap = demand_gap
+        self.low_demand_threshold = low_demand_threshold
+        self.phase_lanes: dict[int, set[str]] = {}
+
+    def reset(self, env: TrafficEnv) -> None:
+        tl_ids = traci.trafficlight.getIDList()
+        if not tl_ids:
+            raise RuntimeError("No traffic lights found in SUMO scenario.")
+        self.phase_lanes = build_green_phase_lane_map(tl_ids[0], env.green_phases)
+
+    def act(self, obs: np.ndarray, env: TrafficEnv) -> int:
+        if env.in_yellow:
+            return 0
+
+        current_time = float(traci.simulation.getTime())
+        time_in_phase = current_time - float(env.phase_start_time)
+        if time_in_phase < float(self.min_green):
+            return 0
+
+        if time_in_phase >= float(self.max_green):
+            return 1
+
+        current_demand = phase_demand(env.current_phase, self.phase_lanes)
+        competing_demand = max(
+            (
+                phase_demand(phase_idx, self.phase_lanes)
+                for phase_idx in env.green_phases
+                if phase_idx != env.current_phase
+            ),
+            default=0.0,
+        )
+
+        low_current = current_demand <= self.low_demand_threshold
+        strong_competitor = competing_demand >= current_demand + self.demand_gap
+        return int(low_current or strong_competitor)
+
+
+class DQNPolicyController:
+    name = "dqn"
+
+    def __init__(self, *, config_path: Path, checkpoint_path: Path) -> None:
+        self.config_path = config_path
+        self.checkpoint_path = checkpoint_path
+        self.config = load_json(config_path)
+        self.device = torch.device(
+            "cuda" if bool(self.config.get("use_cuda", False)) and torch.cuda.is_available() else "cpu"
+        )
+        self.agent: DQNAgent | None = None
+        self.state_dim: int | None = None
+        self.action_dim: int | None = None
+
+    def reset(self, env: TrafficEnv) -> None:
+        if not self.checkpoint_path.exists():
+            raise FileNotFoundError(
+                f"DQN checkpoint not found: {self.checkpoint_path}. "
+                "Train DQN first or pass --dqn-checkpoint."
+            )
+
+        state_dim = int(env.observation_space.shape[0])
+        action_dim = int(env.action_space.n)
+
+        if self.agent is None:
+            agent_cfg = DQNConfig(
+                state_dim=state_dim,
+                action_dim=action_dim,
+                hidden_dim=int(self.config["hidden_dim"]),
+                learning_rate=float(self.config["learning_rate"]),
+                gamma=float(self.config["gamma"]),
+                buffer_capacity=int(self.config["buffer_capacity"]),
+                batch_size=int(self.config["batch_size"]),
+                target_update_freq=int(self.config["target_update_freq"]),
+                device=self.device,
+            )
+            self.agent = DQNAgent(agent_cfg)
+            checkpoint = torch.load(self.checkpoint_path, map_location=self.device)
+            self.agent.q_net.load_state_dict(checkpoint["q_net_state_dict"])
+            target_state = checkpoint.get("target_net_state_dict", checkpoint["q_net_state_dict"])
+            self.agent.target_net.load_state_dict(target_state)
+            self.agent.q_net.eval()
+            self.agent.target_net.eval()
+            self.state_dim = state_dim
+            self.action_dim = action_dim
+        else:
+            if state_dim != self.state_dim or action_dim != self.action_dim:
+                raise ValueError(
+                    "DQN checkpoint dimensions do not match the evaluation scenario set."
+                )
+
+    def act(self, obs: np.ndarray, env: TrafficEnv) -> int:
+        assert self.agent is not None
+        return int(self.agent.select_action(obs, epsilon=0.0))
+
+
+class PPOPolicyController:
+    name = "ppo"
+
+    def __init__(self, *, config_path: Path, checkpoint_path: Path) -> None:
+        self.config_path = config_path
+        self.checkpoint_path = checkpoint_path
+        self.config = load_json(config_path)
+        self.device = torch.device(
+            "cuda" if bool(self.config.get("use_cuda", False)) and torch.cuda.is_available() else "cpu"
+        )
+        self.agent: PPOAgent | None = None
+        self.state_dim: int | None = None
+        self.action_dim: int | None = None
+
+    def reset(self, env: TrafficEnv) -> None:
+        if not self.checkpoint_path.exists():
+            raise FileNotFoundError(
+                f"PPO checkpoint not found: {self.checkpoint_path}. "
+                "Train PPO first or pass --ppo-checkpoint."
+            )
+
+        state_dim = int(env.observation_space.shape[0])
+        action_dim = int(env.action_space.n)
+
+        if self.agent is None:
+            agent_cfg = PPOConfig(
+                state_dim=state_dim,
+                action_dim=action_dim,
+                hidden_dim=int(self.config["hidden_dim"]),
+                learning_rate=float(self.config["learning_rate"]),
+                gamma=float(self.config["gamma"]),
+                adv_estimate_lambda=float(self.config["adv_estimate_lambda"]),
+                clip_epsilon=float(self.config["clip_epsilon"]),
+                update_epochs=int(self.config["update_epochs"]),
+                device=self.device,
+            )
+            self.agent = PPOAgent(agent_cfg)
+            state_dict = torch.load(self.checkpoint_path, map_location=self.device)
+            self.agent.model.load_state_dict(state_dict)
+            self.agent.model.eval()
+            self.state_dim = state_dim
+            self.action_dim = action_dim
+        else:
+            if state_dim != self.state_dim or action_dim != self.action_dim:
+                raise ValueError(
+                    "PPO checkpoint dimensions do not match the evaluation scenario set."
+                )
+
+    def act(self, obs: np.ndarray, env: TrafficEnv) -> int:
+        assert self.agent is not None
+        obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
+        with torch.no_grad():
+            logits, _ = self.agent.model(obs_t)
+        return int(torch.argmax(logits, dim=1).item())
+
+
+def build_controllers(args: argparse.Namespace) -> list[Controller]:
+    requested = [name.strip() for name in args.controllers.split(",") if name.strip()]
+    if not requested:
+        raise ValueError("Expected at least one controller in --controllers.")
+
+    valid = set(DEFAULT_CONTROLLERS)
+    invalid = [name for name in requested if name not in valid]
+    if invalid:
+        raise ValueError(f"Unknown controller(s): {', '.join(invalid)}")
+
+    controllers: list[Controller] = []
+    for name in requested:
+        if name == "fixed_time":
+            controllers.append(FixedTimeController(green_durations=parse_int_csv(args.fixed_green_steps)))
+        elif name == "actuated":
+            controllers.append(
+                ActuatedController(
+                    min_green=args.actuated_min_green,
+                    max_green=args.actuated_max_green,
+                    demand_gap=args.actuated_demand_gap,
+                    low_demand_threshold=args.actuated_low_demand_threshold,
+                )
+            )
+        elif name == "dqn":
+            controllers.append(
+                DQNPolicyController(
+                    config_path=resolve_path(args.dqn_config),
+                    checkpoint_path=resolve_path(args.dqn_checkpoint),
+                )
+            )
+        elif name == "ppo":
+            controllers.append(
+                PPOPolicyController(
+                    config_path=resolve_path(args.ppo_config),
+                    checkpoint_path=resolve_path(args.ppo_checkpoint),
+                )
+            )
+    return controllers
+
+
+def run_episode(
+    *,
+    env: TrafficEnv,
+    controller: Controller,
+    scenario_path: Path,
+    seed: int,
+    horizon: int,
+) -> EpisodeMetrics:
+    set_global_seed(seed)
+    obs, _ = env.reset(seed=seed)
+    controller.reset(env)
+
+    tl_ids = traci.trafficlight.getIDList()
+    if not tl_ids:
+        raise RuntimeError("No traffic lights found in SUMO scenario.")
+    lane_ids = sorted(dict.fromkeys(traci.trafficlight.getControlledLanes(tl_ids[0])))
+
+    waiting_trace: list[float] = []
+    queue_trace: list[float] = []
+    travel_times: list[float] = []
+    departure_times: dict[str, float] = {}
+    completed_trips = 0
+    steps = 0
+
+    while steps < horizon:
+        action = controller.act(obs, env)
+        obs, _reward, terminated, truncated, _info = env.step(action)
+
+        steps += 1
+        completed_trips += register_vehicle_events(departure_times, travel_times)
+        waiting_trace.append(current_mean_waiting_time())
+        queue_trace.append(current_total_queue_length(lane_ids))
+
+        if terminated or truncated:
+            break
+
+    return EpisodeMetrics(
+        controller=controller.name,
+        scenario=display_path(scenario_path),
+        seed=seed,
+        steps=steps,
+        mean_waiting_time=float(mean(waiting_trace)) if waiting_trace else 0.0,
+        mean_queue_length=float(mean(queue_trace)) if queue_trace else 0.0,
+        throughput=float(completed_trips) / max(steps, 1),
+        mean_travel_time=float(mean(travel_times)) if travel_times else 0.0,
+        completed_trips=completed_trips,
+    )
+
+
+def summarize_metric(values: list[float]) -> dict[str, float]:
+    if not values:
+        return {"mean": 0.0, "std": 0.0, "variance": 0.0, "ci95": 0.0}
+
+    avg = float(mean(values))
+    if len(values) == 1:
+        return {"mean": avg, "std": 0.0, "variance": 0.0, "ci95": 0.0}
+
+    std = float(stdev(values))
+    return {
+        "mean": avg,
+        "std": std,
+        "variance": std * std,
+        "ci95": 1.96 * std / math.sqrt(len(values)),
+    }
+
+
+def summarize_controller(episodes: list[EpisodeMetrics]) -> dict:
+    if not episodes:
+        raise ValueError("Cannot summarize an empty episode list.")
+
+    by_seed: dict[int, list[EpisodeMetrics]] = {}
+    for episode in episodes:
+        by_seed.setdefault(episode.seed, []).append(episode)
+
+    def seed_means(field: str) -> list[float]:
+        return [
+            float(mean(getattr(ep, field) for ep in seed_episodes))
+            for _, seed_episodes in sorted(by_seed.items())
+        ]
+
+    metrics = {
+        "mean_waiting_time": summarize_metric(seed_means("mean_waiting_time")),
+        "mean_queue_length": summarize_metric(seed_means("mean_queue_length")),
+        "throughput": summarize_metric(seed_means("throughput")),
+        "mean_travel_time": summarize_metric(seed_means("mean_travel_time")),
+    }
+
+    return {
+        "controller": episodes[0].controller,
+        "episodes": len(episodes),
+        "seed_count": len(by_seed),
+        "scenario_count": len({episode.scenario for episode in episodes}),
+        "total_completed_trips": int(sum(ep.completed_trips for ep in episodes)),
+        "metrics": metrics,
+    }
+
+
+def format_mean_ci(stats: dict[str, float]) -> str:
+    return f"{stats['mean']:.3f} +/- {stats['ci95']:.3f}"
+
+
+def print_comparison_table(summaries: list[dict]) -> None:
+    headers = [
+        "controller",
+        "episodes",
+        "wait (mean+/-ci95)",
+        "queue (mean+/-ci95)",
+        "throughput (mean+/-ci95)",
+        "travel (mean+/-ci95)",
+    ]
+
+    rows = []
+    for summary in summaries:
+        rows.append(
+            [
+                summary["controller"],
+                str(summary["episodes"]),
+                format_mean_ci(summary["metrics"]["mean_waiting_time"]),
+                format_mean_ci(summary["metrics"]["mean_queue_length"]),
+                format_mean_ci(summary["metrics"]["throughput"]),
+                format_mean_ci(summary["metrics"]["mean_travel_time"]),
+            ]
+        )
+
+    widths = [
+        max(len(headers[idx]), *(len(row[idx]) for row in rows))
+        for idx in range(len(headers))
+    ]
+
+    def render(row: list[str]) -> str:
+        return " | ".join(cell.ljust(widths[idx]) for idx, cell in enumerate(row))
+
+    print(render(headers))
+    print("-+-".join("-" * width for width in widths))
+    for row in rows:
+        print(render(row))
+
+
+def flatten_summary(summary: dict) -> dict[str, float | int | str]:
+    row: dict[str, float | int | str] = {
+        "controller": summary["controller"],
+        "episodes": summary["episodes"],
+        "seed_count": summary["seed_count"],
+        "scenario_count": summary["scenario_count"],
+        "total_completed_trips": summary["total_completed_trips"],
+    }
+
+    for metric_name, stats in summary["metrics"].items():
+        row[f"{metric_name}_mean"] = stats["mean"]
+        row[f"{metric_name}_std"] = stats["std"]
+        row[f"{metric_name}_variance"] = stats["variance"]
+        row[f"{metric_name}_ci95"] = stats["ci95"]
+
+    return row
+
+
+def save_outputs(
+    *,
+    args: argparse.Namespace,
+    episodes: list[EpisodeMetrics],
+    summaries: list[dict],
+    output_prefix: Path,
+) -> tuple[Path, Path]:
+    output_prefix.parent.mkdir(parents=True, exist_ok=True)
+    json_path = output_prefix.with_suffix(".json")
+    csv_path = output_prefix.with_suffix(".csv")
+
+    payload = {
+        "generated_at_utc": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "config": {
+            "controllers": [summary["controller"] for summary in summaries],
+            "scenario_set": [display_path(resolve_path(path)) for path in args.sumocfgs.split(",") if path.strip()],
+            "seeds": parse_int_csv(args.seeds),
+            "episodes_per_controller": len(parse_int_csv(args.seeds)) * len(parse_scenarios(args.sumocfgs)),
+            "horizon": args.horizon,
+            "sumo_binary": args.sumo_binary,
+            "fixed_green_steps": parse_int_csv(args.fixed_green_steps),
+            "actuated_min_green": args.actuated_min_green,
+            "actuated_max_green": args.actuated_max_green,
+            "actuated_demand_gap": args.actuated_demand_gap,
+            "actuated_low_demand_threshold": args.actuated_low_demand_threshold,
+        },
+        "metric_definitions": {
+            "mean_waiting_time": "Per-step mean waiting time across active vehicles, averaged over the episode.",
+            "mean_queue_length": "Per-step total halting vehicles across the controlled intersection, averaged over the episode.",
+            "throughput": "Completed trips per simulation step.",
+            "mean_travel_time": "Average trip duration for vehicles that completed within the episode horizon.",
+            "uncertainty": "95% confidence intervals computed across seed-level aggregates.",
+        },
+        "summary": summaries,
+        "episodes": [asdict(episode) for episode in episodes],
+    }
+
+    json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    rows = [flatten_summary(summary) for summary in summaries]
+    with csv_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
+    return json_path, csv_path
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Run one standard evaluation process for RL controllers and baselines."
+    )
+    parser.add_argument(
+        "--controllers",
+        default=",".join(DEFAULT_CONTROLLERS),
+        help="Comma-separated subset of: fixed_time,actuated,dqn,ppo",
+    )
+    parser.add_argument(
+        "--sumocfgs",
+        default=",".join(display_path(path) for path in DEFAULT_SCENARIOS),
+        help="Comma-separated SUMO config paths defining the fixed scenario set.",
+    )
+    parser.add_argument(
+        "--seeds",
+        default=",".join(str(seed) for seed in DEFAULT_SEEDS),
+        help="Comma-separated episode seeds shared by every controller.",
+    )
+    parser.add_argument("--horizon", type=int, default=DEFAULT_HORIZON)
+    parser.add_argument("--sumo-binary", default="sumo")
+
+    parser.add_argument(
+        "--fixed-green-steps",
+        default="42,42",
+        help="Green durations for the fixed-time baseline, ordered by env.green_phases.",
+    )
+
+    parser.add_argument("--actuated-min-green", type=int, default=10)
+    parser.add_argument("--actuated-max-green", type=int, default=45)
+    parser.add_argument("--actuated-demand-gap", type=float, default=2.0)
+    parser.add_argument("--actuated-low-demand-threshold", type=float, default=1.0)
+
+    parser.add_argument("--dqn-config", default="configs/dqn_config.json")
+    parser.add_argument("--dqn-checkpoint", default="results/checkpoints/dqn_best.pt")
+
+    parser.add_argument("--ppo-config", default="configs/ppo_config.json")
+    parser.add_argument("--ppo-checkpoint", default="results/checkpoints/ppo_best.pt")
+
+    parser.add_argument(
+        "--output-prefix",
+        default="",
+        help="Optional output path prefix. Defaults to results/evaluation/controller_eval_<timestamp>.",
+    )
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+
+    if args.horizon <= 0:
+        raise ValueError("--horizon must be > 0")
+
+    scenarios = parse_scenarios(args.sumocfgs)
+    seeds = parse_int_csv(args.seeds)
+    controllers = build_controllers(args)
+
+    all_episodes: list[EpisodeMetrics] = []
+    summaries: list[dict] = []
+
+    for controller in controllers:
+        controller_episodes: list[EpisodeMetrics] = []
+
+        for scenario_path in scenarios:
+            env = TrafficEnv(
+                sumocfg_path=scenario_path,
+                sumo_binary=args.sumo_binary,
+                normalize_observations=True,
+            )
+            try:
+                for seed in seeds:
+                    episode = run_episode(
+                        env=env,
+                        controller=controller,
+                        scenario_path=scenario_path,
+                        seed=seed,
+                        horizon=args.horizon,
+                    )
+                    controller_episodes.append(episode)
+                    print(
+                        f"[{episode.controller}] scenario={episode.scenario} seed={episode.seed} "
+                        f"steps={episode.steps} wait={episode.mean_waiting_time:.3f} "
+                        f"queue={episode.mean_queue_length:.3f} throughput={episode.throughput:.3f} "
+                        f"travel={episode.mean_travel_time:.3f}"
+                    )
+            finally:
+                env.close()
+
+        summaries.append(summarize_controller(controller_episodes))
+        all_episodes.extend(controller_episodes)
+
+    print("\n=== Controller Comparison ===")
+    print_comparison_table(summaries)
+
+    if args.output_prefix:
+        output_prefix = resolve_path(args.output_prefix)
+    else:
+        stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+        output_prefix = RESULTS_DIR / f"controller_eval_{stamp}"
+
+    json_path, csv_path = save_outputs(
+        args=args,
+        episodes=all_episodes,
+        summaries=summaries,
+        output_prefix=output_prefix,
+    )
+
+    print("\nSaved evaluation artifacts:")
+    print(f"- {json_path}")
+    print(f"- {csv_path}")
+
+
+if __name__ == "__main__":
+    main()
