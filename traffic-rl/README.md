@@ -141,3 +141,31 @@ To run fixed-time and actuated with the same seeds for side-by-side comparison:
 python scripts/run_fixed_time_baseline.py --episodes 3 --seeds 4100,4101,4102
 python scripts/run_actuated_baseline.py --episodes 3 --seeds 4100,4101,4102
 ```
+
+## Unified evaluation and travel-time MSE
+
+Run the standardized evaluation pipeline with:
+
+```bash
+python scripts/run_standard_eval.py --controllers fixed_time,actuated,ppo --sumocfgs sumo/sim.sumocfg --seeds 4100,4101,4102,4103,4104 --horizon 1000 --ppo-checkpoint results/checkpoints/ppo_best.pt
+```
+
+The evaluation report now includes:
+
+- mean waiting time
+- mean queue length
+- throughput
+- mean travel time
+- travel-time MSE
+
+### Travel-time MSE definition
+
+The travel-time MSE metric is computed reproducibly for every evaluation episode:
+
+- **Predicted travel time**: for each departed vehicle, sum the free-flow travel times of every route edge plus the internal SUMO junction connector between each consecutive edge pair
+- **Segment free-flow time**: `segment_length / min(segment_speed_limit, vehicle_max_speed_at_departure)`
+- **Actual travel time**: `arrival_sim_time - departure_sim_time`
+- **Per-vehicle squared error**: `(actual_travel_time - predicted_travel_time)^2`
+- **Episode MSE**: mean squared error over all vehicles that both departed and arrived within the episode horizon
+
+Each evaluation JSON report stores both the MSE values and the methodology text used to compute them, so the metric can be reproduced from the saved configuration.
