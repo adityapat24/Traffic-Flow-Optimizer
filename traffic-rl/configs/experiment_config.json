@@ -1,0 +1,30 @@
+{
+  "environment": {
+    "sumocfg_path": "sumo/sim.sumocfg",
+    "sumo_binary": "sumo",
+    "normalize_observations": true
+  },
+  "reproducibility": {
+    "base_seed": 4100,
+    "seeds": [4100, 4101, 4102, 4103, 4104]
+  },
+  "evaluation": {
+    "episodes": 5,
+    "horizon": 1000
+  },
+  "baselines": {
+    "fixed_time": {
+      "phase_durations": [42, 3, 42, 3]
+    },
+    "actuated": {
+      "min_green": 10,
+      "max_green": 45,
+      "demand_gap": 2.0,
+      "low_demand_threshold": 1.0
+    }
+  },
+  "agents": {
+    "dqn_config_path": "configs/dqn_config.json",
+    "ppo_config_path": "configs/ppo_config.json"
+  }
+}

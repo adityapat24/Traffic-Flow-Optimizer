@@ -1,0 +1,88 @@
+{
+  "baseline": "actuated",
+  "generated_at_utc": "2026-04-07T21:32:52Z",
+  "config": {
+    "sumocfg_path": "/Users/adityapathak/CS4100_Final_Project/traffic-rl/sumo/sim.sumocfg",
+    "sumo_binary": "sumo",
+    "episodes": 1,
+    "max_steps": 50,
+    "min_green": 10,
+    "max_green": 45,
+    "demand_gap": 2.0,
+    "low_demand_threshold": 1.0,
+    "seeds": [
+      4100
+    ]
+  },
+  "metadata": {
+    "script": "run_actuated_baseline.py",
+    "generated_at_utc": "2026-04-07T21:32:52Z",
+    "python_version": "3.14.3",
+    "platform": "macOS-26.3.2-x86_64-i386-64bit-Mach-O",
+    "cwd": "/Users/adityapathak/CS4100_Final_Project/traffic-rl",
+    "git_commit": "907be66a54c2a2b48bd71905b1e8cc2a688bd86e",
+    "git_branch": "main",
+    "git_dirty": true,
+    "experiment_config_path": "configs/experiment_config.json",
+    "experiment_config_snapshot": {
+      "environment": {
+        "sumocfg_path": "sumo/sim.sumocfg",
+        "sumo_binary": "sumo",
+        "normalize_observations": true
+      },
+      "reproducibility": {
+        "base_seed": 4100,
+        "seeds": [
+          4100,
+          4101,
+          4102,
+          4103,
+          4104
+        ]
+      },
+      "evaluation": {
+        "episodes": 5,
+        "horizon": 1000
+      },
+      "baselines": {
+        "fixed_time": {
+          "phase_durations": [
+            42,
+            3,
+            42,
+            3
+          ]
+        },
+        "actuated": {
+          "min_green": 10,
+          "max_green": 45,
+          "demand_gap": 2.0,
+          "low_demand_threshold": 1.0
+        }
+      },
+      "agents": {
+        "dqn_config_path": "configs/dqn_config.json",
+        "ppo_config_path": "configs/ppo_config.json"
+      }
+    }
+  },
+  "aggregates": {
+    "episodes": 1,
+    "mean_avg_queue_length": 1.38,
+    "mean_avg_waiting_time": 4.64,
+    "mean_total_arrivals": 12,
+    "mean_throughput_per_step": 0.24,
+    "total_arrivals": 12
+  },
+  "episodes_data": [
+    {
+      "episode_idx": 0,
+      "seed": 4100,
+      "steps": 50,
+      "avg_queue_length": 1.38,
+      "avg_waiting_time": 4.64,
+      "total_arrivals": 12,
+      "throughput_per_step": 0.24
+    }
+  ]
+}

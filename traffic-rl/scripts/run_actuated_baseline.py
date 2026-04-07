@@ -11,6 +11,14 @@ from pathlib import Path
 from statistics import mean
 
 import traci
+from experiment_utils import (
+    DEFAULT_EXPERIMENT_CONFIG,
+    collect_run_metadata,
+    episode_seeds,
+    load_json,
+    resolve_path,
+    set_global_seed,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -157,6 +165,7 @@ def save_results(
     episodes: list[EpisodeMetrics],
     output_prefix: Path,
     args: argparse.Namespace,
+    metadata: dict,
 ) -> tuple[Path, Path]:
     output_prefix.parent.mkdir(parents=True, exist_ok=True)
     json_path = output_prefix.with_suffix(".json")
@@ -173,9 +182,7 @@ def save_results(
 
     payload = {
         "baseline": "actuated",
-        "generated_at_utc": datetime.now(UTC).isoformat(timespec="seconds").replace(
-            "+00:00", "Z"
-        ),
+        "generated_at_utc": metadata["generated_at_utc"],
         "config": {
             "sumocfg_path": str(args.sumocfg),
             "sumo_binary": args.sumo_binary,
@@ -187,6 +194,7 @@ def save_results(
             "low_demand_threshold": args.low_demand_threshold,
             "seeds": args.seeds,
         },
+        "metadata": metadata,
         "aggregates": aggregates,
         "episodes_data": [asdict(e) for e in episodes],
     }
@@ -220,6 +228,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Optional output path prefix. Defaults to results/baselines/actuated/actuated_<timestamp>.",
     )
+    parser.add_argument(
+        "--experiment-config",
+        type=Path,
+        default=DEFAULT_EXPERIMENT_CONFIG,
+        help="Centralized experiment config JSON file.",
+    )
     return parser
 
 
@@ -227,6 +241,38 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
+    experiment_cfg: dict = {}
+    if args.experiment_config and args.experiment_config.exists():
+        experiment_cfg = load_json(args.experiment_config)
+        env_cfg = experiment_cfg.get("environment", {})
+        eval_cfg = experiment_cfg.get("evaluation", {})
+        repro_cfg = experiment_cfg.get("reproducibility", {})
+        act_cfg = experiment_cfg.get("baselines", {}).get("actuated", {})
+
+        if args.sumocfg == DEFAULT_SUMOCFG and env_cfg.get("sumocfg_path"):
+            args.sumocfg = resolve_path(env_cfg.get("sumocfg_path"))
+        if args.sumo_binary == "sumo":
+            args.sumo_binary = env_cfg.get("sumo_binary", args.sumo_binary)
+        if args.episodes == 5:
+            args.episodes = int(eval_cfg.get("episodes", args.episodes))
+        if args.max_steps == 1000:
+            args.max_steps = int(eval_cfg.get("horizon", args.max_steps))
+        if not args.seeds.strip() and "seeds" in repro_cfg:
+            args.seeds = ",".join(str(x) for x in repro_cfg["seeds"])
+        if args.base_seed == 4100:
+            args.base_seed = int(repro_cfg.get("base_seed", args.base_seed))
+        if args.min_green == 10:
+            args.min_green = int(act_cfg.get("min_green", args.min_green))
+        if args.max_green == 45:
+            args.max_green = int(act_cfg.get("max_green", args.max_green))
+        if args.demand_gap == 2.0:
+            args.demand_gap = float(act_cfg.get("demand_gap", args.demand_gap))
+        if args.low_demand_threshold == 1.0:
+            args.low_demand_threshold = float(
+                act_cfg.get("low_demand_threshold", args.low_demand_threshold)
+            )
+
+    args.sumocfg = resolve_path(args.sumocfg)
     if not args.sumocfg.exists():
         raise FileNotFoundError(f"SUMO config not found: {args.sumocfg}")
     if args.episodes <= 0:
@@ -238,16 +284,16 @@ def main() -> None:
     if args.min_green > args.max_green:
         raise ValueError("--min-green must be <= --max-green")
 
-    if args.seeds.strip():
-        seeds = [int(x.strip()) for x in args.seeds.split(",") if x.strip()]
-    else:
-        seeds = [args.base_seed + i for i in range(args.episodes)]
-    if len(seeds) != args.episodes:
-        raise ValueError("Number of seeds must match --episodes")
+    seeds = episode_seeds(
+        episodes=args.episodes,
+        base_seed=args.base_seed,
+        explicit_csv=args.seeds,
+    )
     args.seeds = seeds
 
     episodes: list[EpisodeMetrics] = []
     for episode_idx, seed in enumerate(seeds):
+        set_global_seed(seed)
         metrics = run_one_episode(
             sumo_binary=args.sumo_binary,
             sumocfg_path=args.sumocfg,
@@ -272,7 +318,17 @@ def main() -> None:
         stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
         prefix = RESULTS_DIR / f"actuated_{stamp}"
 
-    json_path, csv_path = save_results(episodes=episodes, output_prefix=prefix, args=args)
+    metadata = collect_run_metadata(
+        config_path=args.experiment_config if args.experiment_config.exists() else None,
+        resolved_config=experiment_cfg,
+        script_name="run_actuated_baseline.py",
+    )
+    json_path, csv_path = save_results(
+        episodes=episodes,
+        output_prefix=prefix,
+        args=args,
+        metadata=metadata,
+    )
     print("\nSaved actuated baseline metrics:")
     print(f"- {json_path}")
     print(f"- {csv_path}")

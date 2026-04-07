@@ -142,6 +142,26 @@ python scripts/run_fixed_time_baseline.py --episodes 3 --seeds 4100,4101,4102
 python scripts/run_actuated_baseline.py --episodes 3 --seeds 4100,4101,4102
 ```
 
+## Reproducible experiment config (Ticket 12)
+
+Shared experiment settings now live in `configs/experiment_config.json`:
+
+- environment (`sumocfg_path`, `sumo_binary`, normalization)
+- reproducibility (`base_seed`, explicit `seeds`)
+- evaluation horizon/episodes
+- baseline params (fixed-time + actuated)
+- agent config paths (`dqn_config_path`, `ppo_config_path`)
+
+Scripts that support this centralized config:
+
+```bash
+python scripts/run_fixed_time_baseline.py --experiment-config configs/experiment_config.json
+python scripts/run_actuated_baseline.py --experiment-config configs/experiment_config.json
+python scripts/run_standard_eval.py --experiment-config configs/experiment_config.json
+```
+
+Each JSON artifact now includes run metadata (timestamp, git commit/branch, dirty flag, Python/platform, and config snapshot) for reproducibility auditing.
+
 ## Unified evaluation and travel-time MSE
 
 Run the standardized evaluation pipeline with:
