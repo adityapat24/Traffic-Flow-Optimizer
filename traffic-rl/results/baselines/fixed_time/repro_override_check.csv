@@ -1,0 +1,2 @@
+episode_idx,seed,steps,avg_queue_length,avg_waiting_time,total_arrivals,throughput_per_step
+0,4100,50,2.86,30.22,9,0.18

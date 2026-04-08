@@ -1,0 +1,125 @@
+{
+  "baseline": "fixed_time",
+  "generated_at_utc": "2026-04-07T21:31:48Z",
+  "config": {
+    "sumocfg_path": "/Users/adityapathak/CS4100_Final_Project/traffic-rl/sumo/sim.sumocfg",
+    "sumo_binary": "sumo",
+    "episodes": 5,
+    "max_steps": 1000,
+    "phase_durations": "42,3,42,3",
+    "seeds": [
+      4100,
+      4101,
+      4102,
+      4103,
+      4104
+    ]
+  },
+  "metadata": {
+    "script": "run_fixed_time_baseline.py",
+    "generated_at_utc": "2026-04-07T21:31:48Z",
+    "python_version": "3.14.3",
+    "platform": "macOS-26.3.2-x86_64-i386-64bit-Mach-O",
+    "cwd": "/Users/adityapathak/CS4100_Final_Project/traffic-rl",
+    "git_commit": "907be66a54c2a2b48bd71905b1e8cc2a688bd86e",
+    "git_branch": "main",
+    "git_dirty": true,
+    "experiment_config_path": "configs/experiment_config.json",
+    "experiment_config_snapshot": {
+      "environment": {
+        "sumocfg_path": "sumo/sim.sumocfg",
+        "sumo_binary": "sumo",
+        "normalize_observations": true
+      },
+      "reproducibility": {
+        "base_seed": 4100,
+        "seeds": [
+          4100,
+          4101,
+          4102,
+          4103,
+          4104
+        ]
+      },
+      "evaluation": {
+        "episodes": 5,
+        "horizon": 1000
+      },
+      "baselines": {
+        "fixed_time": {
+          "phase_durations": [
+            42,
+            3,
+            42,
+            3
+          ]
+        },
+        "actuated": {
+          "min_green": 10,
+          "max_green": 45,
+          "demand_gap": 2.0,
+          "low_demand_threshold": 1.0
+        }
+      },
+      "agents": {
+        "dqn_config_path": "configs/dqn_config.json",
+        "ppo_config_path": "configs/ppo_config.json"
+      }
+    }
+  },
+  "aggregates": {
+    "episodes": 5,
+    "mean_avg_queue_length": 5.7798,
+    "mean_avg_waiting_time": 82.0006,
+    "mean_total_arrivals": 389.4,
+    "mean_throughput_per_step": 0.3894,
+    "total_arrivals": 1947
+  },
+  "episodes_data": [
+    {
+      "episode_idx": 0,
+      "seed": 4100,
+      "steps": 1000,
+      "avg_queue_length": 5.536,
+      "avg_waiting_time": 76.254,
+      "total_arrivals": 383,
+      "throughput_per_step": 0.383
+    },
+    {
+      "episode_idx": 1,
+      "seed": 4101,
+      "steps": 1000,
+      "avg_queue_length": 5.931,
+      "avg_waiting_time": 82.391,
+      "total_arrivals": 398,
+      "throughput_per_step": 0.398
+    },
+    {
+      "episode_idx": 2,
+      "seed": 4102,
+      "steps": 1000,
+      "avg_queue_length": 5.053,
+      "avg_waiting_time": 73.312,
+      "total_arrivals": 355,
+      "throughput_per_step": 0.355
+    },
+    {
+      "episode_idx": 3,
+      "seed": 4103,
+      "steps": 1000,
+      "avg_queue_length": 5.834,
+      "avg_waiting_time": 84.121,
+      "total_arrivals": 392,
+      "throughput_per_step": 0.392
+    },
+    {
+      "episode_idx": 4,
+      "seed": 4104,
+      "steps": 1000,
+      "avg_queue_length": 6.545,
+      "avg_waiting_time": 93.925,
+      "total_arrivals": 419,
+      "throughput_per_step": 0.419
+    }
+  ]
+}

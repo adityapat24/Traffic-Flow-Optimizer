@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import random
 import sys
@@ -15,6 +16,13 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from agents.dqn_agent import DQNAgent, DQNConfig
 from env.traffic_env import TrafficEnv
+from experiment_utils import (
+    DEFAULT_EXPERIMENT_CONFIG,
+    collect_run_metadata,
+    load_json as load_json_file,
+    resolve_path,
+    set_global_seed,
+)
 
 
 def load_config(config_path: str | Path) -> dict:
@@ -73,8 +81,21 @@ def evaluate_policy(env: TrafficEnv, agent: DQNAgent | None, episodes: int, max_
 
 
 def main() -> None:
-    config = load_config(PROJECT_ROOT / "configs" / "dqn_config.json")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="configs/dqn_config.json")
+    parser.add_argument("--experiment-config", type=Path, default=DEFAULT_EXPERIMENT_CONFIG)
+    args = parser.parse_args()
+
+    experiment_cfg: dict = {}
+    if args.experiment_config and args.experiment_config.exists():
+        experiment_cfg = load_json_file(args.experiment_config)
+        args.config = experiment_cfg.get("agents", {}).get("dqn_config_path", args.config)
+
+    config = load_config(resolve_path(args.config))
+    if experiment_cfg.get("reproducibility", {}).get("base_seed") is not None:
+        config["seed"] = int(experiment_cfg["reproducibility"]["base_seed"])
     set_seed(int(config["seed"]))
+    set_global_seed(int(config["seed"]))
 
     device = torch.device(
         "cuda" if bool(config["use_cuda"]) and torch.cuda.is_available() else "cpu"
@@ -192,6 +213,12 @@ def main() -> None:
         "episode_throughputs": episode_throughputs,
         "episode_losses": episode_losses,
     }
+    metadata = collect_run_metadata(
+        config_path=args.experiment_config if args.experiment_config.exists() else None,
+        resolved_config=experiment_cfg,
+        script_name="train_dqn.py",
+    )
+    metrics["metadata"] = metadata
     with open(PROJECT_ROOT / "results" / "metrics" / "dqn_training_metrics.json", "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2)
 
@@ -247,7 +274,8 @@ def main() -> None:
         "random_policy": random_eval,
         "improvement_reward": trained_eval["mean_reward"] - random_eval["mean_reward"],
         "improvement_throughput": trained_eval["mean_throughput"] - random_eval["mean_throughput"],
-        "improvement_wait": random_eval["mean_wait"] - trained_eval["mean_wait"]
+        "improvement_wait": random_eval["mean_wait"] - trained_eval["mean_wait"],
+        "metadata": metadata,
     }
 
     with open(PROJECT_ROOT / "results" / "metrics" / "dqn_vs_random.json", "w", encoding="utf-8") as f:

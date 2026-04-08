@@ -24,6 +24,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from agents.dqn_agent import DQNAgent, DQNConfig
 from agents.ppo_agent import PPOAgent, PPOConfig
 from env.traffic_env import TrafficEnv
+from experiment_utils import DEFAULT_EXPERIMENT_CONFIG, collect_run_metadata
 
 DEFAULT_SCENARIOS = [PROJECT_ROOT / "sumo" / "sim.sumocfg"]
 DEFAULT_SEEDS = [4100, 4101, 4102, 4103, 4104]
@@ -703,6 +704,11 @@ def save_outputs(
 
     payload = {
         "generated_at_utc": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "metadata": collect_run_metadata(
+            config_path=args.experiment_config if args.experiment_config.exists() else None,
+            resolved_config=args._experiment_cfg if hasattr(args, "_experiment_cfg") else {},
+            script_name="run_standard_eval.py",
+        ),
         "config": {
             "controllers": [summary["controller"] for summary in summaries],
             "scenario_set": [display_path(resolve_path(path)) for path in args.sumocfgs.split(",") if path.strip()],
@@ -798,11 +804,46 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Optional output path prefix. Defaults to results/evaluation/controller_eval_<timestamp>.",
     )
+    parser.add_argument(
+        "--experiment-config",
+        type=Path,
+        default=DEFAULT_EXPERIMENT_CONFIG,
+        help="Centralized experiment config JSON file.",
+    )
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
+    experiment_cfg: dict = {}
+    if args.experiment_config and args.experiment_config.exists():
+        experiment_cfg = load_json(args.experiment_config)
+        env_cfg = experiment_cfg.get("environment", {})
+        eval_cfg = experiment_cfg.get("evaluation", {})
+        repro_cfg = experiment_cfg.get("reproducibility", {})
+        agents_cfg = experiment_cfg.get("agents", {})
+        base_cfg = experiment_cfg.get("baselines", {})
+        fixed_cfg = base_cfg.get("fixed_time", {})
+        act_cfg = base_cfg.get("actuated", {})
+
+        if env_cfg.get("sumocfg_path"):
+            args.sumocfgs = str(env_cfg["sumocfg_path"])
+        args.sumo_binary = env_cfg.get("sumo_binary", args.sumo_binary)
+        args.horizon = int(eval_cfg.get("horizon", args.horizon))
+        if repro_cfg.get("seeds"):
+            args.seeds = ",".join(str(x) for x in repro_cfg["seeds"])
+        if fixed_cfg.get("phase_durations"):
+            phases = [int(x) for x in fixed_cfg["phase_durations"]]
+            args.fixed_green_steps = ",".join(str(phases[i]) for i in range(0, len(phases), 2))
+        args.actuated_min_green = int(act_cfg.get("min_green", args.actuated_min_green))
+        args.actuated_max_green = int(act_cfg.get("max_green", args.actuated_max_green))
+        args.actuated_demand_gap = float(act_cfg.get("demand_gap", args.actuated_demand_gap))
+        args.actuated_low_demand_threshold = float(
+            act_cfg.get("low_demand_threshold", args.actuated_low_demand_threshold)
+        )
+        args.dqn_config = agents_cfg.get("dqn_config_path", args.dqn_config)
+        args.ppo_config = agents_cfg.get("ppo_config_path", args.ppo_config)
+    args._experiment_cfg = experiment_cfg
 
     if args.horizon <= 0:
         raise ValueError("--horizon must be > 0")
