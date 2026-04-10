@@ -284,6 +284,28 @@ def main() -> None:
     print("\n=== Final Comparison ===")
     print(json.dumps(comparison, indent=2))
 
+    # ===== Save per-episode CSV (Ticket 13) =====
+    from results_utils import write_csv
+
+    metrics_dir = PROJECT_ROOT / "results" / "metrics"
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+
+    csv_rows = []
+    for i in range(len(episode_rewards)):
+        csv_rows.append({
+            "episode": i + 1,
+            "reward": float(episode_rewards[i]),
+            "avg_wait": float(episode_avg_waits[i]),
+            "throughput": float(episode_throughputs[i]),
+            "loss": float(episode_losses[i]),
+            "epsilon": float(epsilon),
+        })
+
+    write_csv(
+        metrics_dir / "dqn_training_metrics.csv",
+        csv_rows,
+        ["episode", "reward", "avg_wait", "throughput", "loss", "epsilon"],
+    )
 
 if __name__ == "__main__":
     main()

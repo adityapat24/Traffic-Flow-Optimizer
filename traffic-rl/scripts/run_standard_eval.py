@@ -904,6 +904,34 @@ def main() -> None:
         output_prefix=output_prefix,
     )
 
+    # ===== Save comparison plots (Ticket 13) =====
+    from results_utils import save_bar_plot
+
+    plots_dir = PROJECT_ROOT / "results" / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    rows = [flatten_summary(summary) for summary in summaries]
+    controllers = [row["controller"] for row in rows]
+
+    def make_plot(metric_key, title, filename):
+        values = [row[f"{metric_key}_mean"] for row in rows]
+        errors = [row.get(f"{metric_key}_ci95", 0.0) for row in rows]
+
+        save_bar_plot(
+            controllers,
+            values,
+            yerr=errors,
+            ylabel=title,
+            title=f"{title} by Controller",
+            path=plots_dir / filename,
+        )
+
+    make_plot("mean_waiting_time", "Mean Waiting Time", "eval_wait.png")
+    make_plot("mean_queue_length", "Mean Queue Length", "eval_queue.png")
+    make_plot("throughput", "Throughput", "eval_throughput.png")
+    make_plot("mean_travel_time", "Mean Travel Time", "eval_travel_time.png")
+    make_plot("travel_time_mse", "Travel Time MSE", "eval_mse.png")
+
     print("\nSaved evaluation artifacts:")
     print(f"- {json_path}")
     print(f"- {csv_path}")
