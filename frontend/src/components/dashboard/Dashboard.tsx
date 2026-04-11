@@ -1,107 +1,126 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
+import fixed from "../../data/fixed.json";
+import actuated from "../../data/actuated.json";
+import ppo from "../../data/ppo.json";
+import dqn from "../../data/dqn.json";
+
+import { LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
 import "./Dashboard.css";
 
-const corridorMetrics = [
-  { label: "Average Wait", value: "42s", detail: "-18% from last hour" },
-  { label: "Vehicles Routed", value: "12,480", detail: "Across 6 intersections" },
-  { label: "Signal Efficiency", value: "94.1%", detail: "+2.4 pts this shift" },
-];
+type Controller = "fixed" | "actuated" | "ppo" | "dqn";
 
-const activeAlerts = [
-  {
-    title: "Downtown East",
-    description: "Heavy queue detected near the northbound turn lane.",
-    severity: "High",
-  },
-  {
-    title: "Campus Loop",
-    description: "Adaptive timing applied after pedestrian surge.",
-    severity: "Moderate",
-  },
-  {
-    title: "River Crossing",
-    description: "Sensors reporting stable flow after retiming.",
-    severity: "Low",
-  },
-];
+type DashboardData = {
+  episodes: number[];
+  avg_wait: number[];
+  throughput: number[];
+  queue_length: number[];
+  mse: number[];
+};
 
-function Dashboard() {
+const dataMap = { fixed, actuated, ppo, dqn };
+
+export default function Dashboard() {
+  const [controller, setController] = useState<Controller>("ppo");
+  const [data, setData] = useState<DashboardData | null>(null);
+
+  const runDemo = () => {
+    setData(dataMap[controller]);
+  };
+
+  // change controller and clear data
+  const handleControllerChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const selectedController = e.target.value as Controller;
+    setController(selectedController);
+    setData(null);
+  };
+
   return (
-    <main className="dashboard-page">
-      <header className="dashboard-hero">
+    <div className="dashboard-page">
+      {/* HEADER */}
+      <div className="dashboard-header">
         <div>
-          <p className="dashboard-kicker">Live Operations</p>
-          <h1>Traffic Reinforcement Learning Dashboard</h1>
+          <h1>Traffic RL Dashboard</h1>
           <p className="dashboard-subtitle">
-            Overview of routing performance, active incidents, and signal health.
+            Compare Fixed, Actuated, DQN, and PPO controllers using precomputed simulation results.
           </p>
         </div>
-        <Link className="dashboard-home-link" to="/">
-          Back Home
+        <Link className="back-button" to="/">
+          Back to Home
         </Link>
-      </header>
+      </div>
 
-      <section className="metrics-grid" aria-label="Traffic metrics">
-        {corridorMetrics.map((metric) => (
-          <article className="metric-card" key={metric.label}>
-            <p>{metric.label}</p>
-            <strong>{metric.value}</strong>
-            <span>{metric.detail}</span>
-          </article>
-        ))}
-      </section>
+      {/* CONTROLS */}
+      <div className="dashboard-controls">
+        <select value={controller} onChange={handleControllerChange}>
+          <option value="fixed">Fixed</option>
+          <option value="actuated">Actuated</option>
+          <option value="ppo">PPO</option>
+          <option value="dqn">DQN</option>
+        </select>
 
-      <section className="dashboard-panels">
-        <article className="panel panel-wide">
-          <div className="panel-header">
-            <div>
-              <p className="panel-label">Network Status</p>
-              <h2>Intersection Health</h2>
-            </div>
-            <span className="status-pill">All systems nominal</span>
-          </div>
-          <div className="health-grid">
-            <div>
-              <span>Autonomous Mode</span>
-              <strong>5 / 6 corridors</strong>
-            </div>
-            <div>
-              <span>Manual Override</span>
-              <strong>1 corridor</strong>
-            </div>
-            <div>
-              <span>Emergency Preemption</span>
-              <strong>0 active events</strong>
-            </div>
-            <div>
-              <span>Sensor Uptime</span>
-              <strong>99.4%</strong>
-            </div>
-          </div>
-        </article>
+        <button onClick={runDemo}>Run Demo Scenario</button>
+      </div>
 
-        <article className="panel">
-          <div className="panel-header">
-            <div>
-              <p className="panel-label">Alerts</p>
-              <h2>Current Events</h2>
-            </div>
-          </div>
-          <div className="alert-list">
-            {activeAlerts.map((alert) => (
-              <article className="alert-item" key={alert.title}>
-                <div>
-                  <h3>{alert.title}</h3>
-                  <p>{alert.description}</p>
-                </div>
-                <span className="severity-badge">{alert.severity}</span>
-              </article>
-            ))}
-          </div>
-        </article>
-      </section>
-    </main>
+      {/* KPIs */}
+      {data && (
+        <div className="metrics-grid">
+          <KPI label="Avg Wait" value={data.avg_wait.at(-1) ?? 0} />
+          <KPI label="Throughput" value={data.throughput.at(-1) ?? 0} />
+          <KPI label="Queue Length" value={data.queue_length.at(-1) ?? 0} />
+          <KPI label="MSE" value={data.mse.at(-1) ?? 0} />
+        </div>
+      )}
+
+      {/* CHARTS */}
+      {data && <Charts data={data} />}
+    </div>
   );
 }
 
-export default Dashboard;
+/* ---------- KPI ---------- */
+function KPI({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="metric-card">
+      <div className="metric-label">{label}</div>
+      <div className="metric-value">{value}</div>
+    </div>
+  );
+}
+
+/* ---------- CHARTS ---------- */
+function Charts({ data }: { data: DashboardData }) {
+  const chartData = data.episodes.map((ep: number, i: number) => ({
+    episode: ep,
+    avg_wait: data.avg_wait[i],
+    throughput: data.throughput[i],
+    queue_length: data.queue_length[i],
+    mse: data.mse[i],
+  }));
+
+  return (
+    <div className="charts">
+      <div className="chart-card">
+        <LineChart width={500} height={300} data={chartData}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis dataKey="episode" />
+          <YAxis />
+          <Tooltip />
+          <Line type="monotone" dataKey="avg_wait" />
+          <Line type="monotone" dataKey="throughput" />
+        </LineChart>
+      </div>
+
+      <div className="chart-card">
+        <LineChart width={500} height={300} data={chartData}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis dataKey="episode" />
+          <YAxis />
+          <Tooltip />
+          <Line type="monotone" dataKey="queue_length" />
+          <Line type="monotone" dataKey="mse" />
+        </LineChart>
+      </div>
+    </div>
+  );
+}
