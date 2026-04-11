@@ -199,4 +199,4 @@ Each evaluation JSON report stores both the MSE values and the methodology text 
 
 ### Website URL
 
-- Go to `temp.com`
+- Go to `cs4100finalproject-bg71b8fk5-akouyoumjians-projects.vercel.app`
