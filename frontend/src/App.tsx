@@ -1,8 +1,14 @@
+import { Navigate, Route, Routes } from "react-router-dom";
+import Dashboard from "./components/dashboard/Dashboard";
+import HomePage from "./components/homepage/Homepage";
+
 function App() {
   return (
-    <div style={{ padding: 20 }}>
-      <h1>Traffic RL Dashboard</h1>
-    </div>
+    <Routes>
+      <Route path="/" element={<HomePage />} />
+      <Route path="/dashboard" element={<Dashboard />} />
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
   );
 }
 
