@@ -42,6 +42,9 @@
 
 .hero-actions {
   margin-top: 2rem;
+  display: flex;
+  gap: 0.85rem;
+  flex-wrap: wrap;
 }
 
 .primary-link {
@@ -62,6 +65,47 @@
 .primary-link:hover {
   transform: translateY(-1px);
   box-shadow: 0 12px 30px rgba(29, 77, 47, 0.22);
+}
+
+.secondary-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.9rem 1.4rem;
+  border-radius: 999px;
+  border: 1px solid rgba(29, 77, 47, 0.18);
+  background: rgba(255, 255, 255, 0.8);
+  color: #1d4d2f;
+  font-weight: 700;
+  text-decoration: none;
+  transition:
+    transform 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.secondary-link:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 30px rgba(20, 32, 19, 0.1);
+}
+
+.created-by {
+  margin-top: 1.25rem;
+  color: #324331;
+}
+
+.created-by span {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #476447;
+}
+
+.created-by p {
+  margin: 0.4rem 0 0;
+  font-size: 0.98rem;
+  line-height: 1.6;
 }
 
 @media (max-width: 640px) {
