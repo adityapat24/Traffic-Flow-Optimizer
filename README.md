@@ -13,4 +13,4 @@ Final Project For CS4100
 
 ### Website URL
 
-- Go to `cs4100finalproject-bg71b8fk5-akouyoumjians-projects.vercel.app`
+- Go to `https://cs4100finalproject-git-main-akouyoumjians-projects.vercel.app/`
