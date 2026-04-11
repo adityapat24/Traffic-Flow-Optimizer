@@ -42,7 +42,8 @@ export default function Dashboard() {
         <div>
           <h1>Traffic RL Dashboard</h1>
           <p className="dashboard-subtitle">
-            Compare Fixed, Actuated, DQN, and PPO controllers using precomputed simulation results.
+            Compare Fixed, Actuated (baseline), DQN, and PPO agents using precomputed simulation
+            results.
           </p>
         </div>
         <Link className="back-button" to="/">
