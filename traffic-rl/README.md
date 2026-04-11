@@ -189,3 +189,14 @@ The travel-time MSE metric is computed reproducibly for every evaluation episode
 - **Episode MSE**: mean squared error over all vehicles that both departed and arrived within the episode horizon
 
 Each evaluation JSON report stores both the MSE values and the methodology text used to compute them, so the metric can be reproduced from the saved configuration.
+
+## Run the Demo Web App
+
+### Local
+
+- Go to /frontend and run `npm run dev`
+- Go to `http://localhost:5173/` to view and interact with the app
+
+### Website URL
+
+- Go to `temp.com`
