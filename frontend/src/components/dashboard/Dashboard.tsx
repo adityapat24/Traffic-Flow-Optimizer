@@ -7,8 +7,10 @@ import dqn from "../../data/dqn.json";
 
 import { LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
 import "./Dashboard.css";
+import LiveSim from "./LiveSim";
 
 type Controller = "fixed" | "actuated" | "ppo" | "dqn";
+type Tab = "results" | "livesim";
 
 type DashboardData = {
   episodes: number[];
@@ -21,6 +23,7 @@ type DashboardData = {
 const dataMap = { fixed, actuated, ppo, dqn };
 
 export default function Dashboard() {
+  const [tab, setTab] = useState<Tab>("results");
   const [controller, setController] = useState<Controller>("ppo");
   const [data, setData] = useState<DashboardData | null>(null);
 
@@ -28,10 +31,8 @@ export default function Dashboard() {
     setData(dataMap[controller]);
   };
 
-  // change controller and clear data
   const handleControllerChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const selectedController = e.target.value as Controller;
-    setController(selectedController);
+    setController(e.target.value as Controller);
     setData(null);
   };
 
@@ -43,7 +44,7 @@ export default function Dashboard() {
           <h1>Traffic RL Dashboard</h1>
           <p className="dashboard-subtitle">
             Compare Fixed, Actuated (baseline), DQN, and PPO agents using precomputed simulation
-            results.
+            results — or watch a live agent control the intersection.
           </p>
         </div>
         <Link className="back-button" to="/">
@@ -51,30 +52,54 @@ export default function Dashboard() {
         </Link>
       </div>
 
-      {/* CONTROLS */}
-      <div className="dashboard-controls">
-        <select value={controller} onChange={handleControllerChange}>
-          <option value="fixed">Fixed</option>
-          <option value="actuated">Actuated</option>
-          <option value="ppo">PPO</option>
-          <option value="dqn">DQN</option>
-        </select>
-
-        <button onClick={runDemo}>Run Demo Scenario</button>
+      {/* TABS */}
+      <div className="tab-bar">
+        <button
+          className={`tab-btn${tab === "results" ? " tab-active" : ""}`}
+          onClick={() => setTab("results")}
+        >
+          Results
+        </button>
+        <button
+          className={`tab-btn${tab === "livesim" ? " tab-active" : ""}`}
+          onClick={() => setTab("livesim")}
+        >
+          Live Sim
+        </button>
       </div>
 
-      {/* KPIs */}
-      {data && (
-        <div className="metrics-grid">
-          <KPI label="Avg Wait" value={data.avg_wait.at(-1) ?? 0} />
-          <KPI label="Throughput" value={data.throughput.at(-1) ?? 0} />
-          <KPI label="Queue Length" value={data.queue_length.at(-1) ?? 0} />
-          <KPI label="MSE" value={data.mse.at(-1) ?? 0} />
-        </div>
+      {/* ── RESULTS TAB ── */}
+      {tab === "results" && (
+        <>
+          {/* CONTROLS */}
+          <div className="dashboard-controls">
+            <select value={controller} onChange={handleControllerChange}>
+              <option value="fixed">Fixed</option>
+              <option value="actuated">Actuated</option>
+              <option value="ppo">PPO</option>
+              <option value="dqn">DQN</option>
+            </select>
+
+            <button onClick={runDemo}>Run Demo Scenario</button>
+          </div>
+
+          {/* KPIs */}
+          {data && (
+            <div className="metrics-grid">
+              <KPI label="Avg Wait" value={data.avg_wait.at(-1) ?? 0} />
+              <KPI label="Throughput" value={data.throughput.at(-1) ?? 0} />
+              <KPI label="Queue Length" value={data.queue_length.at(-1) ?? 0} />
+              <KPI label="MSE" value={data.mse.at(-1) ?? 0} />
+            </div>
+          )}
+
+          {/* CHARTS */}
+          {data && <Charts data={data} />}
+        </>
       )}
 
-      {/* CHARTS */}
-      {data && <Charts data={data} />}
+      {/* ── LIVE SIM TAB ── */}
+      {tab === "livesim" && <LiveSim />}
     </div>
   );
 }
