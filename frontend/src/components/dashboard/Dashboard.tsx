@@ -5,7 +5,17 @@ import actuated from "../../data/actuated.json";
 import ppo from "../../data/ppo.json";
 import dqn from "../../data/dqn.json";
 
-import { LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
+import {
+  CartesianGrid,
+  Label,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import "./Dashboard.css";
 import LiveSim from "./LiveSim";
 
@@ -127,25 +137,83 @@ function Charts({ data }: { data: DashboardData }) {
   return (
     <div className="charts">
       <div className="chart-card">
-        <LineChart width={500} height={300} data={chartData}>
-          <CartesianGrid strokeDasharray="3 3" />
-          <XAxis dataKey="episode" />
-          <YAxis />
-          <Tooltip />
-          <Line type="monotone" dataKey="avg_wait" />
-          <Line type="monotone" dataKey="throughput" />
-        </LineChart>
+        <h3 className="chart-title">Efficiency by Episode</h3>
+        <div className="chart-frame">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={chartData} margin={{ top: 8, right: 16, left: 8, bottom: 18 }}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="episode">
+                <Label value="Episode" offset={-10} position="insideBottom" />
+              </XAxis>
+              <YAxis>
+                <Label
+                  value="Value"
+                  angle={-90}
+                  position="insideLeft"
+                  style={{ textAnchor: "middle" }}
+                />
+              </YAxis>
+              <Tooltip />
+              <Legend verticalAlign="top" height={36} />
+              <Line
+                type="monotone"
+                dataKey="avg_wait"
+                name="Avg Wait"
+                stroke="#e17f25"
+                strokeWidth={3}
+                dot={false}
+              />
+              <Line
+                type="monotone"
+                dataKey="throughput"
+                name="Throughput"
+                stroke="#2e7d32"
+                strokeWidth={3}
+                dot={false}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
       </div>
 
       <div className="chart-card">
-        <LineChart width={500} height={300} data={chartData}>
-          <CartesianGrid strokeDasharray="3 3" />
-          <XAxis dataKey="episode" />
-          <YAxis />
-          <Tooltip />
-          <Line type="monotone" dataKey="queue_length" />
-          <Line type="monotone" dataKey="mse" />
-        </LineChart>
+        <h3 className="chart-title">Congestion by Episode</h3>
+        <div className="chart-frame">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={chartData} margin={{ top: 8, right: 16, left: 8, bottom: 18 }}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="episode">
+                <Label value="Episode" offset={-10} position="insideBottom" />
+              </XAxis>
+              <YAxis>
+                <Label
+                  value="Value"
+                  angle={-90}
+                  position="insideLeft"
+                  style={{ textAnchor: "middle" }}
+                />
+              </YAxis>
+              <Tooltip />
+              <Legend verticalAlign="top" height={36} />
+              <Line
+                type="monotone"
+                dataKey="queue_length"
+                name="Queue Length"
+                stroke="#1565c0"
+                strokeWidth={3}
+                dot={false}
+              />
+              <Line
+                type="monotone"
+                dataKey="mse"
+                name="MSE"
+                stroke="#8e24aa"
+                strokeWidth={3}
+                dot={false}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
       </div>
     </div>
   );
