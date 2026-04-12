@@ -17,7 +17,7 @@ from typing import Any
 
 import numpy as np
 import torch
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -116,6 +116,149 @@ def get_agents() -> dict:
     }
 
 
+@app.get("/api/results/{agent_type}")
+async def get_results(
+    agent_type: str,
+    n_episodes: int = 5,
+    steps: int = 300,
+) -> dict:
+    """Run *n_episodes* evaluation episodes for *agent_type* and return metrics."""
+    valid = {"ppo", "dqn", "fixed", "actuated"}
+    if agent_type not in valid:
+        raise HTTPException(status_code=400, detail=f"Unknown agent '{agent_type}'. Must be one of {sorted(valid)}.")
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(None, _run_eval, agent_type, n_episodes, steps)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    return result
+
+
+# ── Shared action selection ────────────────────────────────────────────────────
+
+def _select_action(
+    agent_type: str,
+    obs: np.ndarray,
+    info: dict[str, Any],
+    rl_agent: PPOAgent | DQNAgent | None,
+) -> int:
+    if agent_type == "ppo" and isinstance(rl_agent, PPOAgent):
+        t = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
+        with torch.no_grad():
+            logits, _ = rl_agent.model(t)
+            probs_t = torch.softmax(logits, dim=-1).squeeze(0)
+        return int(probs_t.argmax().item())
+
+    if agent_type == "dqn" and isinstance(rl_agent, DQNAgent):
+        t = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
+        with torch.no_grad():
+            q_t = rl_agent.q_net(t).squeeze(0)
+        return int(q_t.argmax().item())
+
+    if agent_type == "fixed":
+        durations = [42, 3, 42, 3]
+        tp = float(info.get("time_in_phase", 0.0))
+        cp = int(info.get("current_phase", 0))
+        return 1 if tp >= durations[cp] else 0
+
+    if agent_type == "actuated":
+        tp = float(info.get("time_in_phase", 0.0))
+        cp = int(info.get("current_phase", 0))
+        iy = bool(info.get("in_yellow", False))
+        queues = obs[1::3]
+        if iy or tp < 10:
+            return 0
+        if tp >= 45:
+            return 1
+        active = float(np.sum(queues[:2])) if cp == 0 else float(np.sum(queues[2:]))
+        return 1 if active < 1.0 else 0
+
+    return 0
+
+
+# ── Multi-episode evaluation (used by REST endpoint) ──────────────────────────
+
+def _run_eval(agent_type: str, n_episodes: int, steps: int) -> dict[str, Any]:
+    """Run *n_episodes* episodes and return per-episode aggregated metrics."""
+    if not _sim_lock.acquire(timeout=120):
+        raise RuntimeError("Simulation lock unavailable — another simulation is running.")
+
+    episodes: list[int] = []
+    avg_waits: list[float] = []
+    throughputs: list[int] = []
+    queue_lengths: list[float] = []
+    mses: list[float] = []
+
+    try:
+        # Load RL agent once; reuse across episodes.
+        rl_agent: PPOAgent | DQNAgent | None = None
+        # We need state_dim to load the agent — grab it from a quick env peek.
+        probe_env = TrafficEnv(normalize_observations=True)
+        try:
+            probe_obs, _ = probe_env.reset(seed=4100)
+            state_dim = probe_env.observation_space.shape[0]
+            n_lanes = (len(probe_obs) - 1) // 3
+        finally:
+            probe_env.close()
+
+        if agent_type == "ppo":
+            rl_agent = _load_ppo(state_dim)
+        elif agent_type == "dqn":
+            rl_agent = _load_dqn(state_dim)
+
+        for ep_idx in range(n_episodes):
+            seed = 4100 + ep_idx
+            env = TrafficEnv(normalize_observations=True)
+            try:
+                obs, _ = env.reset(seed=seed)
+                info: dict[str, Any] = {}
+
+                ep_total_wait = 0.0
+                ep_total_cars = 0
+                ep_total_queue = 0.0
+                ep_wait_sq = 0.0
+                ep_steps = 0
+
+                for _ in range(steps):
+                    action = _select_action(agent_type, obs, info, rl_agent)
+                    obs, _reward, terminated, truncated, info = env.step(action)
+
+                    step_wait = float(info.get("total_wait", 0.0))
+                    step_cars = int(info.get("cars_through", 0))
+                    # Sum of normalized queue values across all controlled lanes
+                    step_queue = float(sum(obs[1 + 3 * i] for i in range(n_lanes)))
+
+                    ep_total_wait += step_wait
+                    ep_total_cars += step_cars
+                    ep_total_queue += step_queue
+                    ep_wait_sq += step_wait ** 2
+                    ep_steps += 1
+
+                    if terminated or truncated:
+                        break
+
+            finally:
+                env.close()
+
+            denom = max(ep_steps, 1)
+            episodes.append(ep_idx + 1)
+            avg_waits.append(round(ep_total_wait / denom, 1))
+            throughputs.append(ep_total_cars)
+            queue_lengths.append(round(ep_total_queue / denom, 3))
+            mses.append(round(ep_wait_sq / denom, 1))
+
+    finally:
+        _sim_lock.release()
+
+    return {
+        "episodes": episodes,
+        "avg_wait": avg_waits,
+        "throughput": throughputs,
+        "queue_length": queue_lengths,
+        "mse": mses,
+    }
+
+
 # ── Simulation thread ──────────────────────────────────────────────────────────
 
 def _simulate(
@@ -154,7 +297,7 @@ def _simulate(
             if stop_event.is_set():
                 break
 
-            # ── Choose action ──────────────────────────────────────────────
+            # ── Choose action (with extra detail for WebSocket streaming) ──
             probs: list[float] | None = None
             q_values: list[float] | None = None
             value: float | None = None
@@ -167,34 +310,14 @@ def _simulate(
                 action = int(probs_t.argmax().item())
                 probs = probs_t.tolist()
                 value = float(val.item())
-
             elif agent_type == "dqn" and isinstance(rl_agent, DQNAgent):
                 t = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
                 with torch.no_grad():
                     q_t = rl_agent.q_net(t).squeeze(0)
                 action = int(q_t.argmax().item())
                 q_values = q_t.tolist()
-
-            elif agent_type == "fixed":
-                durations = [42, 3, 42, 3]
-                tp = float(info.get("time_in_phase", 0.0))
-                cp = int(info.get("current_phase", 0))
-                action = 1 if tp >= durations[cp] else 0
-
-            elif agent_type == "actuated":
-                tp = float(info.get("time_in_phase", 0.0))
-                cp = int(info.get("current_phase", 0))
-                iy = bool(info.get("in_yellow", False))
-                queues = obs[1::3]
-                if iy or tp < 10:
-                    action = 0
-                elif tp >= 45:
-                    action = 1
-                else:
-                    active = float(np.sum(queues[:2])) if cp == 0 else float(np.sum(queues[2:]))
-                    action = 1 if active < 1.0 else 0
             else:
-                action = 0
+                action = _select_action(agent_type, obs, info, rl_agent)
 
             obs, reward, terminated, truncated, info = env.step(action)
             total_reward += float(reward)

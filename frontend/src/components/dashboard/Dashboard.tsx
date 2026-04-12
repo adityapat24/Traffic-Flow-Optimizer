@@ -1,9 +1,5 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import fixed from "../../data/fixed.json";
-import actuated from "../../data/actuated.json";
-import ppo from "../../data/ppo.json";
-import dqn from "../../data/dqn.json";
 
 import {
   CartesianGrid,
@@ -30,20 +26,36 @@ type DashboardData = {
   mse: number[];
 };
 
-const dataMap = { fixed, actuated, ppo, dqn };
-
 export default function Dashboard() {
   const [tab, setTab] = useState<Tab>("results");
   const [controller, setController] = useState<Controller>("ppo");
   const [data, setData] = useState<DashboardData | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const runDemo = () => {
-    setData(dataMap[controller]);
+  const runDemo = async () => {
+    setIsLoading(true);
+    setError(null);
+    setData(null);
+    try {
+      const res = await fetch(`/api/results/${controller}`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail ?? `Server error ${res.status}`);
+      }
+      const json: DashboardData = await res.json();
+      setData(json);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleControllerChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     setController(e.target.value as Controller);
     setData(null);
+    setError(null);
   };
 
   return (
@@ -83,20 +95,36 @@ export default function Dashboard() {
         <>
           {/* CONTROLS */}
           <div className="dashboard-controls">
-            <select value={controller} onChange={handleControllerChange}>
+            <select value={controller} onChange={handleControllerChange} disabled={isLoading}>
               <option value="fixed">Fixed</option>
               <option value="actuated">Actuated</option>
               <option value="ppo">PPO</option>
               <option value="dqn">DQN</option>
             </select>
 
-            <button onClick={runDemo}>Run Demo Scenario</button>
+            <button onClick={runDemo} disabled={isLoading}>
+              {isLoading ? "Running simulation…" : "Run Demo Scenario"}
+            </button>
           </div>
+
+          {/* ERROR */}
+          {error && (
+            <p className="sim-error">
+              Error: {error}
+            </p>
+          )}
+
+          {/* LOADING HINT */}
+          {isLoading && (
+            <p className="sim-loading">
+              Running 5 episodes with the <strong>{controller.toUpperCase()}</strong> agent — this may take a moment…
+            </p>
+          )}
 
           {/* KPIs */}
           {data && (
             <div className="metrics-grid">
-              <KPI label="Avg Wait" value={data.avg_wait.at(-1) ?? 0} />
+              <KPI label="Avg Wait (s)" value={data.avg_wait.at(-1) ?? 0} />
               <KPI label="Throughput" value={data.throughput.at(-1) ?? 0} />
               <KPI label="Queue Length" value={data.queue_length.at(-1) ?? 0} />
               <KPI label="MSE" value={data.mse.at(-1) ?? 0} />
