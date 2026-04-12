@@ -72,6 +72,7 @@ class TrafficEnv(gym.Env):
         normalize_observations: bool = False,
         waiting_time_norm_seconds: float = 300.0,
         render_mode: str | None = None,
+        extra_sumo_flags: list[str] | None = None,
     ) -> None:
         super().__init__()
         setup_sumo_tools()
@@ -79,6 +80,7 @@ class TrafficEnv(gym.Env):
         self.sumo_binary = sumo_binary
         self.normalize_observations = normalize_observations
         self.waiting_time_norm_seconds = waiting_time_norm_seconds
+        self.extra_sumo_flags: list[str] = list(extra_sumo_flags) if extra_sumo_flags else []
         if render_mode is not None:
             self.metadata = {**self.metadata, "render_modes": [render_mode]}
 
@@ -226,9 +228,11 @@ class TrafficEnv(gym.Env):
 
         # changed this to forward the gym seed into sumo so RL and baselines can 
         # share the same route-generation randomness during eval 
-        sumo_cmd =[self.sumo_binary, "-c", cfg]
-        if seed is not None: 
+        sumo_cmd = [self.sumo_binary, "-c", cfg]
+        if seed is not None:
             sumo_cmd.extend(["--seed", str(int(seed))])
+        if self.extra_sumo_flags:
+            sumo_cmd.extend(self.extra_sumo_flags)
         try:
             traci.start(sumo_cmd)
         except FileNotFoundError as exc:

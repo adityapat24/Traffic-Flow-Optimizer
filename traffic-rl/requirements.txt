@@ -4,3 +4,6 @@ gymnasium
 torch
 numpy
 matplotlib
+fastapi
+uvicorn[standard]
+websockets
