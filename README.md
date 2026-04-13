@@ -13,25 +13,28 @@ Final Project For CS4100
 
 ### Website URL
 
-- Go to `https://cs4100finalproject-git-main-akouyoumjians-projects.vercel.app/`
+- Go to `https://cs4100finalprojectclone-git-main-akouyoumjians-projects.vercel.app/`
 
 ## Run the Live Sim (Dashboard "Live Sim" tab)
 
 The Live Sim tab streams a real SUMO simulation to the dashboard and shows the agent's decisions in real time. It requires a local backend server.
 
 **1. Install backend dependencies**
+
 ```bash
 cd traffic-rl
 pip install fastapi "uvicorn[standard]" websockets
 ```
 
 **2. Start the backend**
+
 ```bash
 cd traffic-rl
 uvicorn api.server:app --port 8000
 ```
 
 **3. Start the frontend** (separate terminal)
+
 ```bash
 cd frontend
 npm run dev

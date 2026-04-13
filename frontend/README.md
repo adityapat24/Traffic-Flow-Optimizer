@@ -7,7 +7,7 @@
 
 ### Website URL
 
-- Go to `https://cs4100finalproject-git-main-akouyoumjians-projects.vercel.app/`
+- Go to `https://cs4100finalprojectclone-git-main-akouyoumjians-projects.vercel.app/`
 
 # React + TypeScript + Vite
 

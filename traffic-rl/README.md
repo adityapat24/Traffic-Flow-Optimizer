@@ -199,4 +199,4 @@ Each evaluation JSON report stores both the MSE values and the methodology text 
 
 ### Website URL
 
-- Go to `https://cs4100finalproject-git-main-akouyoumjians-projects.vercel.app/`
+- Go to `https://cs4100finalprojectclone-git-main-akouyoumjians-projects.vercel.app/`
